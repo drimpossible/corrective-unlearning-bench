@@ -1,1 +1,1 @@
-# corrective-machine-unlearning
+# Corrective Unlearning Benchmark
