@@ -11,7 +11,7 @@ This repository contains simplified code for the paper:
 [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
 
 <p align="center">
-<a href="url"><img src="https://github.com/drimpossible/GDumb/blob/master/corrective-diff.png" height="300" width="381" ></a>
+<a href="url"><img src="https://github.com/drimpossible/corrective-unlearning-bench/blob/main/corrective-diff.png" height="300" width="381" ></a>
 </p>
 
 <!-- ## Installation and Dependencies
