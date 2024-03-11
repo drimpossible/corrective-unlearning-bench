@@ -4,11 +4,10 @@ This repository contains simplified code for the paper:
 
 **Corrective Machine Unlearning**  
 [Shashwat Goel*](https://shash42.github.io/), [Ameya Prabhu*](https://drimpossible.github.io), [Philip Torr](https://www.robots.ox.ac.uk/~phst/), [Ponnurangam Kumaraguru](https://precog.iiit.ac.in/), [Amartya Sanyal](https://amartya18x.github.io/)
+
 \* = Equal Contribution
 
-[[PDF](https://arxiv.org/pdf/2402.14015.pdf)]
-<!-- [[Slides](https://github.com/drimpossible/drimpossible.github.io/blob/master/documents/gdumb_slides.pdf)] -->
-[[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
+[[PDF](https://arxiv.org/pdf/2402.14015.pdf)] [[Slides]()] [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
 
 <p align="center">
 <a href="url"><img src="https://github.com/drimpossible/corrective-unlearning-bench/blob/main/corrective-diff.png" height="300" width="381" ></a>
