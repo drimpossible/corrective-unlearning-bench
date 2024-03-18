@@ -7,6 +7,7 @@ from os import makedirs
 from os.path import exists
 from torch.nn import functional as F
 import itertools
+from sklearn.cluster import KMeans
 
 
 class Naive():
@@ -326,3 +327,147 @@ class SSD(ApplyK):
         self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
         self.unlearn_file_prefix += '_'+str(self.opt.SSDdampening)+'_'+str(self.opt.SSDselectwt)
         return 
+    
+class SpectralSignature(ApplyK):
+    def __init__(self, opt, model, prenet=None):
+        super(SpectralSignature, self).__init__(opt, model, prenet)
+        # Initialize parameters for spectral signature analysis
+        self.spectral_threshold = opt.spectral_threshold  # Threshold for identifying significant singular values
+        self.contribution_threshold = opt.contribution_threshold  # Threshold for identifying significant data point contributions
+
+    def forward_pass(self, images, target, infgt):
+        # Utilize the forward_pass from ApplyK as a baseline
+        output = super(SpectralSignature, self).forward_pass(images, target, infgt)
+        return output
+
+    def spectral_analysis(self, activations):
+        # Perform SVD on the activations
+        U, S, V = torch.svd(activations, some=True, compute_uv=True)
+        # Identify significant singular values (this is highly conceptual and depends on your application)
+        significant_svs = S > self.spectral_threshold
+        # Calculate the contribution of each data point to the significant singular values
+        contributions = torch.matmul(U[:, significant_svs], torch.diag(S[significant_svs]))
+        # Identify data points with contributions above a certain threshold
+        significant_data_points = contributions.norm(dim=1) > self.contribution_threshold
+        return significant_data_points
+
+    def unlearn(self, train_loader, test_loader, eval_loaders=None):
+        # Example of unlearning based on spectral analysis (this is a simplified example)
+        self.model.train()
+        for images, target, infgt in train_loader:
+            images, target = images.cuda(), target.cuda()
+            with autocast():
+                self.optimizer.zero_grad()
+                activations = self.model(images)  # Obtain activations
+                significant_data_points = self.spectral_analysis(activations)
+                # Filter out significant data points based on spectral analysis for this training step
+                filtered_images = images[~significant_data_points]
+                filtered_targets = target[~significant_data_points]
+                # Perform training step with filtered data
+                if len(filtered_images) > 0:  # Check if there are any data points left after filtering
+                    output = self.model(filtered_images)
+                    loss = F.cross_entropy(output, filtered_targets)
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.scheduler.step()
+        super(SpectralSignature, self).eval(test_loader)
+
+    def get_save_prefix(self):
+        # Customize the save prefix to include details specific to SpectralSignature
+        base_prefix = super(SpectralSignature, self).get_save_prefix()  # Get the base prefix from ApplyK
+        spectral_prefix = "SpectralSig_threshold{}_contrib{}".format(self.spectral_threshold, self.contribution_threshold)
+        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
+        
+        return
+
+class ActivationClustering(ApplyK):
+    def __init__(self, opt, model, prenet=None):
+        super().__init__(opt, model, prenet)
+        self.nb_clusters = 2  # Assuming binary clustering for simplicity
+        self.clusterer = KMeans(n_clusters=self.nb_clusters, random_state=0)
+
+    def _get_activations(self, data_loader):
+        activations = []
+        self.model.eval()
+        with torch.no_grad():
+            for images, _, _ in data_loader:
+                images = images.to(self.opt.device)
+                output = self.model(images)
+                activations.append(output.detach().cpu())
+        activations = torch.cat(activations, dim=0)
+        return activations.numpy()
+
+    def _perform_activation_clustering(self, activations):
+        cluster_labels = self.clusterer.fit_predict(activations)
+        return cluster_labels
+
+    def _identify_unlearning_targets(self, cluster_labels):
+        counts = np.bincount(cluster_labels)
+        target_cluster = np.argmin(counts)
+        return np.where(cluster_labels == target_cluster)[0]
+
+    def _filter_loader(self, loader, targets):
+        # Assuming loader.dataset is a list or similar; adjust for actual data structure
+        filtered_dataset = [data for i, data in enumerate(loader.dataset) if i not in targets]
+        return torch.utils.data.DataLoader(filtered_dataset, batch_size=loader.batch_size, shuffle=True)
+
+    def unlearn(self, train_loader, test_loader, forget_loader, eval_loaders=None):
+        print("Starting unlearning process...")
+
+        # Get activations from the model for the forget_loader dataset
+        activations = self._get_activations(forget_loader)
+        
+        # Perform activation clustering on these activations
+        cluster_labels = self._perform_activation_clustering(activations)
+        
+        # Identify unlearning targets based on cluster analysis
+        unlearning_targets = self._identify_unlearning_targets(cluster_labels)
+        
+        # Filter out the unlearning targets from the train_loader
+        new_train_loader = self._filter_loader(train_loader, unlearning_targets)
+
+        print(f"Retraining model without {len(unlearning_targets)} identified targets.")
+        
+        # Example retraining process with the new training loader
+        for epoch in range(self.opt.num_epochs):  # Assuming self.opt.num_epochs exists
+            self.train_one_epoch(new_train_loader)
+        
+        # Example evaluation process with the original test loader
+        self.eval(test_loader)
+        
+        print("Unlearning process completed.")
+
+    def train_one_epoch(self, loader):
+        self.model.train()
+        running_loss = 0.0
+        for images, targets, _ in loader:
+            images, targets = images.to(self.opt.device), targets.to(self.opt.device)
+            self.optimizer.zero_grad()
+            with torch.set_grad_enabled(True):
+                outputs = self.model(images)
+                loss = self.criterion(outputs, targets)  # Assuming self.criterion is defined
+                loss.backward()
+                self.optimizer.step()
+            running_loss += loss.item() * images.size(0)
+        epoch_loss = running_loss / len(loader.dataset)
+        print(f'Training Loss: {epoch_loss:.4f}')
+
+    def eval(self, loader):
+        self.model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for images, targets in loader:
+                images, targets = images.to(self.opt.device), targets.to(self.opt.device)
+                outputs = self.model(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += targets.size(0)
+                correct += (predicted == targets).sum().item()
+        print(f'Accuracy of the model on the test images: {100 * correct / total:.2f}%')
+
+    def get_save_prefix(self):
+        base_prefix = super(ActivationClustering, self).get_save_prefix()  # Get the base prefix from ApplyK
+        spectral_prefix = "ActivationClustering_nbClusters{}".format(self.nb_clusters)
+        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
+        return
