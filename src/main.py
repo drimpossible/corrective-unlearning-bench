@@ -97,11 +97,11 @@ if __name__ == '__main__':
     train_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     forget_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=False, sampler=SubsetRandomSampler(forget_idx), num_workers=4, pin_memory=True)
 
-    if opt.unlearn_method in ['Naive', 'EU', 'CF']:
+    if opt.unlearn_method in ['Naive', 'EU', 'CF', 'SpectralSignature']:
         method.unlearn(train_loader=retain_loader, test_loader=test_loader, eval_loaders=eval_loaders)
     elif opt.unlearn_method in ['BadT']:
         method.unlearn(train_loader=train_loader, test_loader=test_loader, eval_loaders=eval_loaders)
-    elif opt.unlearn_method in ['Scrub', 'SSD']:
+    elif opt.unlearn_method in ['Scrub', 'SSD', 'ActivationClustering']:
         method.unlearn(train_loader=retain_loader, test_loader=test_loader, forget_loader=forget_loader, eval_loaders=eval_loaders)
     
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)

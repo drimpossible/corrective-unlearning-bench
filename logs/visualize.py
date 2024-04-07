@@ -1,9 +1,13 @@
-import argparse
+import sys
 import os
+path = os.path.dirname(os.path.dirname(__file__))
+sys.path.append(path)
+
+import argparse
 import pathlib
 import numpy as np
 import pandas as pd
-from utils import get_targeted_classes
+from src.utils import get_targeted_classes
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -80,20 +84,24 @@ def parse_unpath(un_path, pre_args, un_args, args, headers):
         te_adv_y = np.load(un_path + f'/targetsadv_test.npy')
         forget_acc = compute_accuracy(tr_adv_preds[forget_idx], tr_adv_y[forget_idx])
         if un_args['deletion_size'] != 0: 
-            delete_err = compute_accuracy(tr_adv_preds[delete_idx], tr_wrong['delete_idx'])
+            delete_err = compute_accuracy(tr_adv_preds[delete_idx], tr_wrong[delete_idx])
             delete_acc = compute_accuracy(tr_adv_preds[delete_idx], tr_adv_y[delete_idx])
         test_acc = compute_accuracy(te_adv_preds, te_adv_y)
         forget_clean_acc = compute_accuracy(tr_preds[forget_idx], tr_y[forget_idx])
         test_clean_acc = compute_accuracy(te_preds, te_y)
-        print(forget_acc, test_acc, forget_clean_acc, test_clean_acc)
+        print("forget_acc:", forget_acc)
+        print("test_acc:", test_acc)
+        print("forget_clean_acc:", forget_clean_acc)
+        print("test_clean_acc:", test_clean_acc)
         ret['delete_acc'], ret['delete_err'], ret['manip_acc'], ret['test_acc'], ret['manip_clean_acc'], ret['test_clean_acc'] =\
          delete_acc, delete_err, forget_acc, test_acc, forget_clean_acc, test_clean_acc
 
 
-    if pre_args['dataset_method'] == 'labelrandom':
+    if pre_args['dataset_method'] == 'interclasslabelswap':
         forget_acc = compute_accuracy(tr_preds[forget_idx], tr_y[forget_idx])
         test_acc = compute_accuracy(te_preds, te_y)
-        print(forget_acc, test_acc)
+        print("forget_acc:", forget_acc)
+        print("test_acc:", test_acc)
         ret['forget_acc'], ret['test_acc'] = forget_acc, test_acc
 
     if pre_args['dataset_method'] == 'labeltargeted':

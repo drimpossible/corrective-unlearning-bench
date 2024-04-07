@@ -8,6 +8,7 @@ from os.path import exists
 from torch.nn import functional as F
 import itertools
 from sklearn.cluster import KMeans
+import torch.nn as nn
 
 
 class Naive():
@@ -384,8 +385,11 @@ class SpectralSignature(ApplyK):
 class ActivationClustering(ApplyK):
     def __init__(self, opt, model, prenet=None):
         super().__init__(opt, model, prenet)
-        self.nb_clusters = 2  # Assuming binary clustering for simplicity
+        self.nb_clusters = 2  
         self.clusterer = KMeans(n_clusters=self.nb_clusters, random_state=0)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.opt.unlearn_lr)
+        self.epoch_loss = 0.0
 
     def _get_activations(self, data_loader):
         activations = []
@@ -416,7 +420,7 @@ class ActivationClustering(ApplyK):
         print("Starting unlearning process...")
 
         # Get activations from the model for the forget_loader dataset
-        activations = self._get_activations(forget_loader)
+        activations = self._get_activations(train_loader)
         
         # Perform activation clustering on these activations
         cluster_labels = self._perform_activation_clustering(activations)
@@ -429,11 +433,9 @@ class ActivationClustering(ApplyK):
 
         print(f"Retraining model without {len(unlearning_targets)} identified targets.")
         
-        # Example retraining process with the new training loader
-        for epoch in range(self.opt.num_epochs):  # Assuming self.opt.num_epochs exists
+        for epoch in range(self.opt.unlearn_iters):  
             self.train_one_epoch(new_train_loader)
         
-        # Example evaluation process with the original test loader
         self.eval(test_loader)
         
         print("Unlearning process completed.")
@@ -450,21 +452,8 @@ class ActivationClustering(ApplyK):
                 loss.backward()
                 self.optimizer.step()
             running_loss += loss.item() * images.size(0)
-        epoch_loss = running_loss / len(loader.dataset)
-        print(f'Training Loss: {epoch_loss:.4f}')
-
-    def eval(self, loader):
-        self.model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, targets in loader:
-                images, targets = images.to(self.opt.device), targets.to(self.opt.device)
-                outputs = self.model(images)
-                _, predicted = torch.max(outputs.data, 1)
-                total += targets.size(0)
-                correct += (predicted == targets).sum().item()
-        print(f'Accuracy of the model on the test images: {100 * correct / total:.2f}%')
+        self.epoch_loss = running_loss / len(loader.dataset)
+        print(f'Training Loss: {self.epoch_loss:.6f}')
 
     def get_save_prefix(self):
         base_prefix = super(ActivationClustering, self).get_save_prefix()  # Get the base prefix from ApplyK
