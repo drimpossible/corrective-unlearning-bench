@@ -333,8 +333,8 @@ class SpectralSignature(ApplyK):
     def __init__(self, opt, model, prenet=None):
         super(SpectralSignature, self).__init__(opt, model, prenet)
         # Initialize parameters for spectral signature analysis
-        self.spectral_threshold = opt.spectral_threshold  # Threshold for identifying significant singular values
-        self.contribution_threshold = opt.contribution_threshold  # Threshold for identifying significant data point contributions
+        self.spectral_threshold = 1000  # Threshold for identifying significant singular values
+        self.contribution_threshold = 10  # Threshold for identifying significant data point contributions
 
     def forward_pass(self, images, target, infgt):
         # Utilize the forward_pass from ApplyK as a baseline
@@ -343,6 +343,7 @@ class SpectralSignature(ApplyK):
 
     def spectral_analysis(self, activations):
         # Perform SVD on the activations
+        activations = activations.float()
         U, S, V = torch.svd(activations, some=True, compute_uv=True)
         # Identify significant singular values (this is highly conceptual and depends on your application)
         significant_svs = S > self.spectral_threshold
