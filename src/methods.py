@@ -9,7 +9,7 @@ from torch.nn import functional as F
 import itertools
 from sklearn.cluster import KMeans
 import torch.nn as nn
-
+import pytorch_influence_functions as ptif
 
 class Naive():
     def __init__(self, opt, model, prenet=None):
@@ -461,3 +461,46 @@ class ActivationClustering(ApplyK):
         spectral_prefix = "ActivationClustering_nbClusters{}".format(self.nb_clusters)
         self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
         return
+    
+class InfluenceFunction(ApplyK):
+    def __init__(self, opt, model, prenet=None):
+        super().__init__(opt, model, prenet)
+        ptif.init_logging()
+        self.config = ptif.get_default_config()
+        self.config.update({
+            'gpu': 0,  # Set based on your setup
+            'recursion_depth': 1000,
+            'r': 1,
+            'damp': 0.01,
+            'scale': 25,
+            'outdir': './influence_output',  # Ensure this directory exists
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+        })
+
+    def eval_influence(self, train_loader, test_loader):
+        self.model.eval()
+        influences, harmful, helpful = ptif.calc_img_wise(self.config, self.model, train_loader, test_loader)
+        return influences, harmful, helpful
+
+    def unlearn(self, train_loader, test_loader):
+        _, harmful, _ = self.eval_influence(train_loader, test_loader)
+        # Identify the indices of samples to be removed
+        remove_indices = set(harmful[:10])  # Consider the top 10 harmful
+
+        # Create a new DataLoader without the harmful samples
+        new_dataset = [d for i, d in enumerate(train_loader.dataset) if i not in remove_indices]
+        new_train_loader = torch.utils.data.DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+
+        # Re-train the model using the new DataLoader
+        self.train_model(new_train_loader)
+        self.eval(test_loader)
+
+    def train_model(self, train_loader):
+        self.model.train()
+        for epoch in range(self.opt.num_epochs):
+            self.train_one_epoch(train_loader)
+
+    def get_save_prefix(self):
+        prefix = super().get_save_prefix()
+        self.unlearn_file_prefix = f'{prefix}/influence'
+        return self.unlearn_file_prefix
