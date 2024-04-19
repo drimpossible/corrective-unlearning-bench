@@ -103,6 +103,8 @@ if __name__ == '__main__':
         method.unlearn(train_loader=train_loader, test_loader=test_loader, eval_loaders=eval_loaders)
     elif opt.unlearn_method in ['Scrub', 'SSD', 'ActivationClustering']:
         method.unlearn(train_loader=retain_loader, test_loader=test_loader, forget_loader=forget_loader, eval_loaders=eval_loaders)
+    elif opt.unlearn_method in ['InfluenceFunction']:
+        method.unlearn(train_loader=train_loader, test_loader=test_loader)
     
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..')

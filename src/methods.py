@@ -3,13 +3,32 @@ from utils import LinearLR, unlearn_func, ssd_tuning, distill_kl_loss, compute_a
 from torch.cuda.amp import autocast
 import numpy as np
 from torch.cuda.amp import GradScaler
+from pathlib import Path
 from os import makedirs
 from os.path import exists
 from torch.nn import functional as F
 import itertools
 from sklearn.cluster import KMeans
 import torch.nn as nn
+import sys
 import pytorch_influence_functions as ptif
+from torch.utils.data import Dataset, DataLoader
+from kronfluence.analyzer import Analyzer, prepare_model
+from kronfluence.task import Task
+from typing import Tuple
+from kronfluence.arguments import FactorArguments
+
+class DataLoaderWrapper(Dataset):
+    """ Wrap the dataset to return only images and targets, as expected by ptif """
+    def __init__(self, dataset):
+        self.dataset = dataset
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        data = self.dataset[idx]
+        return data[0], data[1]  
 
 class Naive():
     def __init__(self, opt, model, prenet=None):
@@ -462,30 +481,42 @@ class ActivationClustering(ApplyK):
         self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
         return
     
-class InfluenceFunction(ApplyK):
+class TorchInfluenceFunction(ApplyK):
     def __init__(self, opt, model, prenet=None):
         super().__init__(opt, model, prenet)
         ptif.init_logging()
         self.config = ptif.get_default_config()
         self.config.update({
-            'gpu': 0,  # Set based on your setup
+            'gpu': 0,  
             'recursion_depth': 1000,
             'r': 1,
             'damp': 0.01,
             'scale': 25,
-            'outdir': './influence_output',  # Ensure this directory exists
+            'outdir': '../InfluenceFunction/influence_output',  # Ensure this directory exists
             'device': 'cuda' if torch.cuda.is_available() else 'cpu'
         })
+        self.threshold = 0
 
     def eval_influence(self, train_loader, test_loader):
         self.model.eval()
-        influences, harmful, helpful = ptif.calc_img_wise(self.config, self.model, train_loader, test_loader)
-        return influences, harmful, helpful
+        influences_dict = ptif.calc_img_wise(self.config, self.model, train_loader, test_loader)
+        return influences_dict
 
     def unlearn(self, train_loader, test_loader):
-        _, harmful, _ = self.eval_influence(train_loader, test_loader)
+        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        wrapped_test_loader = DataLoader(DataLoaderWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
+        influence_dict = self.eval_influence(wrapped_train_loader, wrapped_test_loader)
+        '''
+        harmful_scores = set()
+        for test_id, data in influences_dict.items():
+            for idx in data['influence']:
+                if idx not in harmful_scores:
+                    harmful_scores[idx] = data['influence'][idx] 
+                elif data['influence'][idx] < harmful_scores[idx]: 
+                    harmful_scores[idx] = data['influence'][idx]
         # Identify the indices of samples to be removed
-        remove_indices = set(harmful[:10])  # Consider the top 10 harmful
+        sorted_harmful = sorted(harmful_scores.items(), key=lambda x: x[1], reverse=True)
+        remove_indices = set([idx for idx, _ in sorted_harmful[:10]])  # Consider the top 10 harmful
 
         # Create a new DataLoader without the harmful samples
         new_dataset = [d for i, d in enumerate(train_loader.dataset) if i not in remove_indices]
@@ -493,7 +524,7 @@ class InfluenceFunction(ApplyK):
 
         # Re-train the model using the new DataLoader
         self.train_model(new_train_loader)
-        self.eval(test_loader)
+        self.eval(test_loader)'''
 
     def train_model(self, train_loader):
         self.model.train()
@@ -502,5 +533,115 @@ class InfluenceFunction(ApplyK):
 
     def get_save_prefix(self):
         prefix = super().get_save_prefix()
-        self.unlearn_file_prefix = f'{prefix}/influence'
+        self.unlearn_file_prefix = f'{prefix}/torch_influence'
         return self.unlearn_file_prefix
+
+BATCH_TYPE = Tuple[torch.Tensor, torch.Tensor]
+
+class ClassificationTask(Task):
+    def compute_train_loss(
+        self,
+        batch: BATCH_TYPE,
+        model: torch.nn.Module,
+        sample: bool = False,
+    ) -> torch.Tensor:
+        inputs, labels = batch
+        logits = model(inputs)
+        if not sample:
+            return torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
+        with torch.no_grad():
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            sampled_labels = torch.multinomial(
+                probs,
+                num_samples=1,
+            ).flatten()
+        return torch.nn.functional.cross_entropy(logits, sampled_labels.detach(), reduction="sum")
+
+    def compute_measurement(
+        self,
+        batch: BATCH_TYPE,
+        model: torch.nn.Module,
+    ) -> torch.Tensor:
+        inputs, labels = batch
+        logits = model(inputs)
+
+        bindex = torch.arange(logits.shape[0]).to(device=logits.device, non_blocking=False)
+        logits_correct = logits[bindex, labels]
+
+        cloned_logits = logits.clone()
+        cloned_logits[bindex, labels] = torch.tensor(-torch.inf, device=logits.device, dtype=logits.dtype)
+
+        margins = logits_correct - cloned_logits.logsumexp(dim=-1)
+        return -margins.sum()
+
+class InfluenceFunction(Naive):
+    def __init__(self, opt, model, prenet=None):
+        super().__init__(opt, model, prenet)
+        self.task = ClassificationTask()
+        self.model = prepare_model(model=self.model, task=self.task)
+        self.analyzer = Analyzer(analysis_name="unlearn_analysis", model=self.model, task=self.task)
+        self.threshold = -10.0
+
+    def fit_influence_factors(self, train_loader):
+        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        # Fit all EKFAC factors for the given model
+        #self.analyzer.fit_all_factors(factors_name="ekfac", dataset=train_dataset)
+        factor_strategy = 'ekfac'
+        factor_args = FactorArguments(strategy=factor_strategy)
+        self.analyzer.fit_all_factors(
+            factors_name=factor_strategy,
+            dataset=wrapped_train_loader.dataset,
+            per_device_batch_size=None,
+            factor_args=factor_args,
+            overwrite_output_dir=True,
+        )
+
+    def compute_influences(self, test_loader, train_loader):
+        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        wrapped_test_loader = DataLoader(DataLoaderWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
+        # Compute all pairwise influence scores with the computed factors
+        self.analyzer.compute_pairwise_scores(
+            scores_name="unlearn_scores",
+            factors_name="ekfac",
+            query_dataset=wrapped_test_loader.dataset,
+            train_dataset=wrapped_train_loader.dataset,
+            per_device_query_batch_size=1024,  # Adjust based on your GPU capacity
+        )
+        scores = self.analyzer.load_pairwise_scores(scores_name="unlearn_scores")
+        return scores['all_modules']
+
+    def unlearn(self, train_loader, test_loader, eval_loaders=None):
+        # First, fit the influence factors using the training data
+        self.fit_influence_factors(train_loader)
+
+        # Compute influences of the test data on the training data
+        influences = self.compute_influences(test_loader, train_loader)
+
+        # Identify training samples with the highest influence scores
+        harmful_indices = self.identify_harmful(influences)
+
+        # Filter out the most harmful training samples
+        new_train_loader = self.filter_training_data(train_loader, harmful_indices)
+
+        # Re-train the model with the filtered training set using existing methods
+        while self.curr_step < self.opt.train_iters:
+            self.train_one_epoch(new_train_loader)
+            self.eval(test_loader)
+
+    def identify_harmful(self, influences):
+        # Select harmful samples based on influence score threshold
+        harmful_scores = influences.sum(axis=0)  # Sum influences per training sample
+        harmful_indices = [i for i,e in enumerate(harmful_scores) if harmful_scores[i] < self.threshold]  
+        return harmful_indices
+
+    def filter_training_data(self, train_loader, harmful_indices):
+        # Filter out harmful data points
+        new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+        return new_train_loader
+
+    def get_save_prefix(self):
+        base_prefix = super(InfluenceFunction, self).get_save_prefix()  
+        spectral_prefix = "InfluenceFunction_threshold{}".format(self.threshold)
+        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
+        return
