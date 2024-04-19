@@ -16,6 +16,7 @@ def parse_args():
     return parser.parse_args()
 
 def parse_pretrain_dirname(dirname, preargnamelist):
+    print(dirname)
     arglist = dirname.split('_')
     
     assert(len(arglist) == len(preargnamelist))
@@ -25,10 +26,12 @@ def parse_pretrain_dirname(dirname, preargnamelist):
     return pretrain_args
 
 def parse_unlearn_dirname(dirname, unargnamelist):
+    print("dirname:", dirname)
     arglist = dirname.split('_')
     assert(len(arglist) >= 2)
     
     un_args = dict((arg, '') for arg in unargnamelist)
+    print(un_args)
     if arglist[0] == 'Naive':
         un_args['unlearn_method'], un_args['exp_name'] = arglist[0], arglist[1]
         un_args['deletion_size'] = 0

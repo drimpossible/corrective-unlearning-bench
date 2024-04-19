@@ -395,11 +395,9 @@ class SpectralSignature(ApplyK):
         super(SpectralSignature, self).eval(test_loader)
 
     def get_save_prefix(self):
-        # Customize the save prefix to include details specific to SpectralSignature
-        base_prefix = super(SpectralSignature, self).get_save_prefix()  # Get the base prefix from ApplyK
-        spectral_prefix = "SpectralSig_threshold{}_contrib{}".format(self.spectral_threshold, self.contribution_threshold)
-        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
-        
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
+        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
+        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
 
 class ActivationClustering(ApplyK):
@@ -476,9 +474,9 @@ class ActivationClustering(ApplyK):
         print(f'Training Loss: {self.epoch_loss:.6f}')
 
     def get_save_prefix(self):
-        base_prefix = super(ActivationClustering, self).get_save_prefix()  # Get the base prefix from ApplyK
-        spectral_prefix = "ActivationClustering_nbClusters{}".format(self.nb_clusters)
-        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
+        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
+        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
     
 class TorchInfluenceFunction(ApplyK):
@@ -532,8 +530,9 @@ class TorchInfluenceFunction(ApplyK):
             self.train_one_epoch(train_loader)
 
     def get_save_prefix(self):
-        prefix = super().get_save_prefix()
-        self.unlearn_file_prefix = f'{prefix}/torch_influence'
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
+        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
+        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return self.unlearn_file_prefix
 
 BATCH_TYPE = Tuple[torch.Tensor, torch.Tensor]
@@ -580,7 +579,7 @@ class InfluenceFunction(Naive):
         self.task = ClassificationTask()
         self.model = prepare_model(model=self.model, task=self.task)
         self.analyzer = Analyzer(analysis_name="unlearn_analysis", model=self.model, task=self.task)
-        self.threshold = -10.0
+        self.threshold = 0.0
 
     def fit_influence_factors(self, train_loader):
         wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
@@ -641,7 +640,7 @@ class InfluenceFunction(Naive):
         return new_train_loader
 
     def get_save_prefix(self):
-        base_prefix = super(InfluenceFunction, self).get_save_prefix()  
-        spectral_prefix = "InfluenceFunction_threshold{}".format(self.threshold)
-        self.unlearn_file_prefix = "{}/{}".format(base_prefix, spectral_prefix)
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
+        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
+        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
