@@ -100,14 +100,14 @@ def parse_unpath(un_path, pre_args, un_args, args, headers):
          delete_acc, delete_err, forget_acc, test_acc, forget_clean_acc, test_clean_acc
 
 
-    if pre_args['dataset_method'] == 'interclasslabelswap':
+    if pre_args['dataset_method'] == 'dontuse':
         forget_acc = compute_accuracy(tr_preds[forget_idx], tr_y[forget_idx])
         test_acc = compute_accuracy(te_preds, te_y)
         print("forget_acc:", forget_acc)
         print("test_acc:", test_acc)
         ret['forget_acc'], ret['test_acc'] = forget_acc, test_acc
 
-    if pre_args['dataset_method'] == 'labeltargeted':
+    if pre_args['dataset_method'] == 'interclasslabelswap':
         classes = get_targeted_classes(pre_args['dataset'])
         te_class_idxes = np.concatenate((np.nonzero(te_y == classes[0]), np.nonzero(te_y == classes[1])), axis=1).squeeze()
         retain_idxes =np.setdiff1d(np.arange(len(te_y)), te_class_idxes)
