@@ -644,3 +644,74 @@ class InfluenceFunction(Naive):
         self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
         self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
+
+class FlippingInfluence(Naive):
+    def __init__(self, opt, model, prenet=None):
+        super.__init__(opt, model, prenet)
+        self.task = ClassificationTask()
+        self.model = prepare_model(model=self.model, task=self.task)
+        self.analyzer = Analyzer(analysis_name='unlearn_analysis', model=self.model, task=self.task)
+        self.n_tolerate = 2
+
+    def compute_influences(self, train_data, deletion_data):
+        self.analyzer.compute_pairwise_scores(
+            scores_name="influence_scores",
+            factors_name="ekfac",
+            query_dataset=deletion_data.dataset,
+            train_dataset=train_data.dataset,
+            per_device_query_batch_size=1,
+        )
+        return self.analyzer.load_pairwise_scores("influence_scores")
+
+    def flip_images(self, loader):
+        flipped_images = []
+        for img, _ in loader.dataset:
+            flipped_image = transforms.functional.hflip(img)
+            flipped_images.append(flipped_image)
+        return DataLoader(DataLoaderWrapper(flipped_images, loader.dataset.targets), batch_size=loader.batch_size)
+
+    def detect_poisons(self):
+        # Step 1: Calculate initial influence scores
+        original_scores = self.compute_influences(self.train_loader, self.deletion_loader)
+
+        # Step 2: Flip the images in the deletion set
+        flipped_loader = self.flip_images(self.deletion_loader)
+
+        # Step 3: Recalculate influence scores with flipped images
+        flipped_scores = self.compute_influences(self.train_loader, flipped_loader)
+
+        # Step 4: Calculate delta matrix
+        delta_scores = flipped_scores - original_scores
+
+        # Step 5: Detect poisons per class
+        poison_indices = []
+        for class_idx in range(len(self.deletion_loader.dataset.classes)):
+            class_mask = (self.deletion_loader.dataset.targets == class_idx)
+            class_indices = torch.where(class_mask)[0]
+            # Sum delta scores for each train sample across all deletion samples of the class
+            class_deltas = delta_scores[:, class_indices].sum(1)
+            # Check if the number of positive deltas is within the tolerance
+            suspicious_indices = [i for i, delta in enumerate(class_deltas) if (delta > 0).sum() <= self.n_tolerate]
+            poison_indices.extend(suspicious_indices)
+
+        return set(poison_indices)
+
+    def filter_training_data(self, train_loader, harmful_indices):
+        # Filter out harmful data points
+        new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+        return new_train_loader
+
+    def unlearn(self, train_loader, test_loader, deletion_loader):
+        harmful_indices = self.detect_poisons()
+        new_train_loader = self.filter_training_data(train_loader, harmful_indices)
+        while self.curr_step < self.opt.train_iters:
+            self.train_one_epoch(new_train_loader)
+            self.eval(test_loader)
+
+    def get_save_prefix(self):
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
+        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
+        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
+        return
+
