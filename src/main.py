@@ -46,7 +46,7 @@ if __name__ == '__main__':
         adversarial_train_loader, adversarial_test_loader, corrupt_val, corrupt_size = None, None, None, None
 
     eval_loaders['manip'] = manip_noaug_cleanL_loader
-    if opt.dataset_method == 'labeltargeted':
+    if opt.dataset_method == 'interclasslabelswap':
         classes = get_targeted_classes(opt.dataset)
         indices = []
         for batch_idx, (data, target) in enumerate(test_loader):
@@ -106,7 +106,7 @@ if __name__ == '__main__':
     elif opt.unlearn_method in ['InfluenceFunction']:
         method.unlearn(train_loader=train_loader, test_loader=test_loader)
     elif opt.unlearn_method in ['FlippingInfluence']:
-        method.unlearn(train_loader=train_loader, test_loader=test_loader, deletion_loader=deletion_loader)
+        method.unlearn(train_loader=train_loader, test_loader=test_loader, deletion_loader=forget_loader)
     
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..')

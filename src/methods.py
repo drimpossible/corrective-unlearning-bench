@@ -18,7 +18,7 @@ from kronfluence.task import Task
 from typing import Tuple
 from kronfluence.arguments import FactorArguments
 
-class DataLoaderWrapper(Dataset):
+class DataSetWrapper(Dataset):
     """ Wrap the dataset to return only images and targets, as expected by ptif """
     def __init__(self, dataset):
         self.dataset = dataset
@@ -29,6 +29,20 @@ class DataLoaderWrapper(Dataset):
     def __getitem__(self, idx):
         data = self.dataset[idx]
         return data[0], data[1]  
+
+class CollectedDataset(Dataset):
+    """Wraps a data loader's batch data into a dataset-like structure with individual samples."""
+    def __init__(self, data_loader):
+        # Collect data from the data loader and store it
+        self.data = [batch for batch in data_loader]
+        # Flatten the list of batches into individual samples
+        self.samples = [item for batch in self.data for item in zip(*batch)]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]
 
 class Naive():
     def __init__(self, opt, model, prenet=None):
@@ -501,8 +515,8 @@ class TorchInfluenceFunction(ApplyK):
         return influences_dict
 
     def unlearn(self, train_loader, test_loader):
-        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
-        wrapped_test_loader = DataLoader(DataLoaderWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
+        wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        wrapped_test_loader = DataLoader(DataSetWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
         influence_dict = self.eval_influence(wrapped_train_loader, wrapped_test_loader)
         '''
         harmful_scores = set()
@@ -582,7 +596,7 @@ class InfluenceFunction(Naive):
         self.threshold = 0.0
 
     def fit_influence_factors(self, train_loader):
-        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
         # Fit all EKFAC factors for the given model
         #self.analyzer.fit_all_factors(factors_name="ekfac", dataset=train_dataset)
         factor_strategy = 'ekfac'
@@ -596,8 +610,8 @@ class InfluenceFunction(Naive):
         )
 
     def compute_influences(self, test_loader, train_loader):
-        wrapped_train_loader = DataLoader(DataLoaderWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
-        wrapped_test_loader = DataLoader(DataLoaderWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
+        wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
+        wrapped_test_loader = DataLoader(DataSetWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
         # Compute all pairwise influence scores with the computed factors
         self.analyzer.compute_pairwise_scores(
             scores_name="unlearn_scores",
@@ -647,46 +661,62 @@ class InfluenceFunction(Naive):
 
 class FlippingInfluence(Naive):
     def __init__(self, opt, model, prenet=None):
-        super.__init__(opt, model, prenet)
+        super().__init__(opt, model, prenet)
         self.task = ClassificationTask()
         self.model = prepare_model(model=self.model, task=self.task)
         self.analyzer = Analyzer(analysis_name='unlearn_analysis', model=self.model, task=self.task)
         self.n_tolerate = 2
 
-    def compute_influences(self, train_data, deletion_data):
+    def fit_influence_factors(self, train_loader):
+        # Fit all EKFAC factors for the given model
+        self.analyzer.fit_all_factors(factors_name="ekfac", dataset=train_loader.dataset)
+        factor_strategy = 'ekfac'
+        factor_args = FactorArguments(strategy=factor_strategy)
+        self.analyzer.fit_all_factors(
+            factors_name=factor_strategy,
+            dataset=train_loader.dataset,
+            per_device_batch_size=None,
+            factor_args=factor_args,
+            overwrite_output_dir=True,
+        )
+
+    def compute_influences(self, train_loader, deletion_loader):
+        wrapped_train_dataset = DataSetWrapper(CollectedDataset(train_loader))
+        wrapped_deletion_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
         self.analyzer.compute_pairwise_scores(
             scores_name="influence_scores",
             factors_name="ekfac",
-            query_dataset=deletion_data.dataset,
-            train_dataset=train_data.dataset,
-            per_device_query_batch_size=1,
+            query_dataset=wrapped_deletion_dataset,
+            train_dataset=wrapped_train_dataset,
+            per_device_query_batch_size=50,
+            overwrite_output_dir=True
         )
         return self.analyzer.load_pairwise_scores("influence_scores")
 
     def flip_images(self, loader):
         flipped_images = []
-        for img, _ in loader.dataset:
+        for img, _ in loader:
             flipped_image = transforms.functional.hflip(img)
             flipped_images.append(flipped_image)
-        return DataLoader(DataLoaderWrapper(flipped_images, loader.dataset.targets), batch_size=loader.batch_size)
+        return DataLoader(DataLoaderWrapper(flipped_images, loader.targets), batch_size=loader.batch_size)
 
-    def detect_poisons(self):
+    def detect_poisons(self, train_loader, deletion_loader):
         # Step 1: Calculate initial influence scores
-        original_scores = self.compute_influences(self.train_loader, self.deletion_loader)
+        original_scores = self.compute_influences(train_loader, deletion_loader)
 
         # Step 2: Flip the images in the deletion set
-        flipped_loader = self.flip_images(self.deletion_loader)
+        flipped_loader = self.flip_images(DataLoader(DataSetWrapper(CollectedDataset(deletion_loader))), batch_size=50)
 
         # Step 3: Recalculate influence scores with flipped images
-        flipped_scores = self.compute_influences(self.train_loader, flipped_loader)
+        flipped_scores = self.compute_influences(train_loader, flipped_loader)
 
         # Step 4: Calculate delta matrix
         delta_scores = flipped_scores - original_scores
 
         # Step 5: Detect poisons per class
         poison_indices = []
-        for class_idx in range(len(self.deletion_loader.dataset.classes)):
-            class_mask = (self.deletion_loader.dataset.targets == class_idx)
+        for class_idx in range(len(deletion_loader.samples.classes)):
+            class_mask = (deletion_loader.samples.targets == class_idx)
             class_indices = torch.where(class_mask)[0]
             # Sum delta scores for each train sample across all deletion samples of the class
             class_deltas = delta_scores[:, class_indices].sum(1)
@@ -703,7 +733,8 @@ class FlippingInfluence(Naive):
         return new_train_loader
 
     def unlearn(self, train_loader, test_loader, deletion_loader):
-        harmful_indices = self.detect_poisons()
+        self.fit_influence_factors(train_loader)
+        harmful_indices = self.detect_poisons(train_loader, deletion_loader)
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
         while self.curr_step < self.opt.train_iters:
             self.train_one_epoch(new_train_loader)
