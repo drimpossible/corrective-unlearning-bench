@@ -314,10 +314,12 @@ class SSD(ApplyK):
 
 
     def unlearn(self, train_loader, test_loader, forget_loader, eval_loaders=None):
+        actual_iters = self.opt.train_iters
         self.opt.train_iters = len(train_loader) + len(forget_loader)
         time_start = time.process_time()
         self.best_model = ssd_tuning(self.model, forget_loader, self.opt.SSDdampening, self.opt.SSDselectwt, train_loader, self.opt.device)
         self.save_files['train_time_taken'] += time.process_time() - time_start
+        self.opt.train_iters = actual_iters
         return
 
 

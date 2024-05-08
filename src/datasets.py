@@ -88,7 +88,7 @@ def manip_dataset(dataset, train_labels, method, manip_set_size, save_dir='../sa
         
         manip_dict = {}
         for i in range(len(idxes_in_manipidx)):
-            manip_dict[idxes_in_manipidx[i]] = train_labels[manip_idx[i]] if method == 'labelrandom' else 0
+            manip_dict[idxes_in_manipidx[i]] = train_labels[manip_idx[i]] if method == 'randomlabelswap' else 0
         
     elif method == 'interclasslabelswap':
         classes = get_targeted_classes(dataset)
@@ -169,12 +169,12 @@ class DatasetWrapper(data.Dataset):
 
 if __name__ == "__main__":
     train_set, test_set, mean, std, train_labels = load_dataset(dataset='CIFAR10', root='../data/')
-    manip_dict = manip_dataset(dataset='CIFAR10', train_labels=train_labels, method='labelrandom', manip_set_size=10000, save_dir='../saved_models')
+    manip_dict = manip_dataset(dataset='CIFAR10', train_labels=train_labels, method='randomlabelswap', manip_set_size=10000, save_dir='../saved_models')
     #print(manip_dict)
     train_set = DatasetWrapper(train_set, manip_dict, mode='pretrain')
     badt_set = DatasetWrapper(train_set, manip_dict, mode='badt')
 
     train_set, test_set, mean, std, train_labels = load_dataset(dataset='CIFAR100', root='../data/')
-    manip_dict = manip_dataset(dataset='CIFAR100', train_labels=train_labels, method='labelrandom', manip_set_size=1000, save_dir='../saved_models')
+    manip_dict = manip_dataset(dataset='CIFAR100', train_labels=train_labels, method='randomlabelswap', manip_set_size=1000, save_dir='../saved_models')
     #print(manip_dict)
     train_set = DatasetWrapper(train_set, manip_dict, mode='pretrain')

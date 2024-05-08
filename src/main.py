@@ -46,7 +46,7 @@ if __name__ == '__main__':
         adversarial_train_loader, adversarial_test_loader, corrupt_val, corrupt_size = None, None, None, None
 
     eval_loaders['manip'] = manip_noaug_cleanL_loader
-    if opt.dataset_method == 'labeltargeted':
+    if opt.dataset_method == 'interclasslabelswap':
         classes = get_targeted_classes(opt.dataset)
         indices = []
         for batch_idx, (data, target) in enumerate(test_loader):
