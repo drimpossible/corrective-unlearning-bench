@@ -16,6 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 from kronfluence.analyzer import Analyzer, prepare_model
 from kronfluence.task import Task
 from typing import Tuple
+from torchvision import transforms
 from kronfluence.arguments import FactorArguments
 
 class DataSetWrapper(Dataset):
@@ -31,18 +32,51 @@ class DataSetWrapper(Dataset):
         return data[0], data[1]  
 
 class CollectedDataset(Dataset):
-    """Wraps a data loader's batch data into a dataset-like structure with individual samples."""
-    def __init__(self, data_loader):
-        # Collect data from the data loader and store it
-        self.data = [batch for batch in data_loader]
-        # Flatten the list of batches into individual samples
-        self.samples = [item for batch in self.data for item in zip(*batch)]
+    """Aggregates all data into a single dataset from a DataLoader."""
+    def __init__(self, loader):
+        self.data = []
+        self.targets = []
+        self.additional_info = []
+
+        first_batch = next(iter(loader))
+        has_additional_info = len(first_batch) == 3
+
+        for batch in loader:
+            self.data.append(batch[0])
+            batch_targets = batch[1]
+            if batch_targets.ndim == 0:
+                batch_targets = batch_targets.unsqueeze(0) 
+            self.targets.append(batch_targets)
+            if has_additional_info:
+                self.additional_info.append(batch[2])
+        
+        # Concatenate lists into tensors
+        self.data = torch.cat(self.data, dim=0)
+        self.targets = torch.cat(self.targets, dim=0)
+        if has_additional_info:
+            self.additional_info = torch.cat(self.additional_info, dim=0)
+        else:
+            self.additional_info = None  # Handle cases without additional info
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.data)
 
     def __getitem__(self, index):
-        return self.samples[index]
+        if self.additional_info is not None:
+            return self.data[index], self.targets[index], self.additional_info[index]
+        else:
+            return self.data[index], self.targets[index]
+
+class CustomDataset(Dataset):
+    def __init__(self, images, targets):
+        self.images = images
+        self.targets = targets
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        return self.images[idx], self.targets[idx]
 
 class Naive():
     def __init__(self, opt, model, prenet=None):
@@ -669,25 +703,22 @@ class FlippingInfluence(Naive):
 
     def fit_influence_factors(self, train_loader):
         # Fit all EKFAC factors for the given model
-        self.analyzer.fit_all_factors(factors_name="ekfac", dataset=train_loader.dataset)
-        factor_strategy = 'ekfac'
-        factor_args = FactorArguments(strategy=factor_strategy)
+        collected_train_data = CollectedDataset(train_loader)
+        wrapped_train_dataset = DataSetWrapper(collected_train_data)
         self.analyzer.fit_all_factors(
-            factors_name=factor_strategy,
-            dataset=train_loader.dataset,
-            per_device_batch_size=None,
-            factor_args=factor_args,
+            factors_name="ekfac",
+            dataset=wrapped_train_dataset,
+            per_device_batch_size=50,
+            factor_args=FactorArguments(strategy='ekfac'),
             overwrite_output_dir=True,
         )
 
     def compute_influences(self, train_loader, deletion_loader):
-        wrapped_train_dataset = DataSetWrapper(CollectedDataset(train_loader))
-        wrapped_deletion_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
         self.analyzer.compute_pairwise_scores(
             scores_name="influence_scores",
             factors_name="ekfac",
-            query_dataset=wrapped_deletion_dataset,
-            train_dataset=wrapped_train_dataset,
+            query_dataset=train_loader,
+            train_dataset=deletion_loader,
             per_device_query_batch_size=50,
             overwrite_output_dir=True
         )
@@ -695,34 +726,39 @@ class FlippingInfluence(Naive):
 
     def flip_images(self, loader):
         flipped_images = []
-        for img, _ in loader:
+        targets = []
+        for img, target in loader:
             flipped_image = transforms.functional.hflip(img)
-            flipped_images.append(flipped_image)
-        return DataLoader(DataLoaderWrapper(flipped_images, loader.targets), batch_size=loader.batch_size)
+            flipped_images.append(flipped_image) 
+            targets.append(target)
+        flipped_dataset = CustomDataset(flipped_images, targets)  
+        return DataLoader(flipped_dataset, batch_size=50, shuffle=True) 
 
     def detect_poisons(self, train_loader, deletion_loader):
+        wrapped_train_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
+        wrapped_deletion_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
         # Step 1: Calculate initial influence scores
-        original_scores = self.compute_influences(train_loader, deletion_loader)
+        original_scores = self.compute_influences(wrapped_train_dataset, wrapped_deletion_dataset)
 
         # Step 2: Flip the images in the deletion set
-        flipped_loader = self.flip_images(DataLoader(DataSetWrapper(CollectedDataset(deletion_loader))), batch_size=50)
+        flipped_loader = self.flip_images(wrapped_deletion_dataset)
+        wrapped_flipped_dataset = DataSetWrapper(CollectedDataset(flipped_loader))
 
         # Step 3: Recalculate influence scores with flipped images
-        flipped_scores = self.compute_influences(train_loader, flipped_loader)
+        flipped_scores = self.compute_influences(wrapped_train_dataset, wrapped_flipped_dataset)['all_module']
 
         # Step 4: Calculate delta matrix
         delta_scores = flipped_scores - original_scores
-
+        print(size(delta_scores))
+        
         # Step 5: Detect poisons per class
         poison_indices = []
-        for class_idx in range(len(deletion_loader.samples.classes)):
-            class_mask = (deletion_loader.samples.targets == class_idx)
+        for i in enumerate(wrapped_train_dataset):
+            img, target = wrapped_train_dataset[i]
+            class_mask = (CollectedDataset(deletion_loader).targets == target)
             class_indices = torch.where(class_mask)[0]
-            # Sum delta scores for each train sample across all deletion samples of the class
-            class_deltas = delta_scores[:, class_indices].sum(1)
-            # Check if the number of positive deltas is within the tolerance
-            suspicious_indices = [i for i, delta in enumerate(class_deltas) if (delta > 0).sum() <= self.n_tolerate]
-            poison_indices.extend(suspicious_indices)
+            if delta_scores[class_indices, i] < n_tolerate:
+                poison_indices.extend(i)
 
         return set(poison_indices)
 
