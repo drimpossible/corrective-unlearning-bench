@@ -735,7 +735,7 @@ class FlippingInfluence(Naive):
         return DataLoader(flipped_dataset, batch_size=50, shuffle=True) 
 
     def detect_poisons(self, train_loader, deletion_loader):
-        wrapped_train_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
+        wrapped_train_dataset = DataSetWrapper(CollectedDataset(train_loader))
         wrapped_deletion_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
         # Step 1: Calculate initial influence scores
         original_scores = self.compute_influences(wrapped_train_dataset, wrapped_deletion_dataset)
@@ -745,19 +745,23 @@ class FlippingInfluence(Naive):
         wrapped_flipped_dataset = DataSetWrapper(CollectedDataset(flipped_loader))
 
         # Step 3: Recalculate influence scores with flipped images
-        flipped_scores = self.compute_influences(wrapped_train_dataset, wrapped_flipped_dataset)['all_module']
+        flipped_scores = self.compute_influences(wrapped_train_dataset, wrapped_flipped_dataset)
+        
+        original_scores = original_scores['all_modules']
+        flipped_scores = flipped_scores['all_modules']
 
         # Step 4: Calculate delta matrix
         delta_scores = flipped_scores - original_scores
-        print(size(delta_scores))
+        print(type(delta_scores), delta_scores.size())
         
         # Step 5: Detect poisons per class
         poison_indices = []
-        for i in enumerate(wrapped_train_dataset):
-            img, target = wrapped_train_dataset[i]
+        for i, data in enumerate(wrapped_train_dataset):
+            img = data[0]
+            target = data[1]
             class_mask = (CollectedDataset(deletion_loader).targets == target)
             class_indices = torch.where(class_mask)[0]
-            if delta_scores[class_indices, i] < n_tolerate:
+            if delta_scores[class_indices, i] < self.n_tolerate:
                 poison_indices.extend(i)
 
         return set(poison_indices)
