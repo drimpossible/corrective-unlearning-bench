@@ -11,21 +11,25 @@ from datasets import load_dataset, DatasetWrapper, manip_dataset, get_deletion_s
 if __name__ == '__main__':
     torch.multiprocessing.set_sharing_strategy('file_system')
     seed_everything(seed=0)
-    assert(torch.cuda.is_available())
     opt = parse_args()
     print('==> Opts: ',opt)
+    if opt.device == 'cuda':
+        assert(torch.cuda.is_available())
 
     # Get model
     if opt.model == 'vitb16':
         model = timm.create_model('vit_base_patch16_224', pretrained=True, num_classes=opt.num_classes).cuda()
-    else:
+    elif opt.device == 'cuda':
         model = getattr(resnet, opt.model)(opt.num_classes).cuda()
+    else:
+        model = getattr(resnet, opt.model)(opt.num_classes)
 
     # Get dataloaders done
     train_set, train_noaug_set, test_set, train_labels, max_val = load_dataset(dataset=opt.dataset, root=opt.data_dir)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     manip_dict, manip_idx, untouched_idx = manip_dataset(dataset=opt.dataset, train_labels=train_labels, method=opt.dataset_method, manip_set_size=opt.forget_set_size, save_dir=opt.save_dir)
     print('==> Loaded the dataset!')
+    print("manip_idx:", manip_idx)
 
     wtrain_noaug_cleanL_set = DatasetWrapper(train_noaug_set, manip_dict, mode='test')
     train_test_loader = torch.utils.data.DataLoader(wtrain_noaug_cleanL_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)

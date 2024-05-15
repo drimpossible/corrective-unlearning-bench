@@ -87,14 +87,18 @@ class Naive():
         self.save_files = {'train_top1':[], 'val_top1':[], 'train_time_taken':0}
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
         self.scheduler = LinearLR(self.optimizer, T=self.opt.train_iters*1.25, warmup_epochs=self.opt.train_iters//100) # Spend 1% time in warmup, and stop 66% of the way through training 
-        self.top1 = torchmetrics.Accuracy(task="multiclass", num_classes=self.opt.num_classes).cuda()
+        if self.opt.device == 'cuda':
+            self.top1 = torchmetrics.Accuracy(task="multiclass", num_classes=self.opt.num_classes).cuda()
+        else:
+            self.top1 = torchmetrics.Accuracy(task="multiclass", num_classes=self.opt.num_classes)
         self.scaler = GradScaler()
 
 
     def set_model(self, model, prenet=None):
         self.prenet = None
         self.model = model
-        self.model.cuda()
+        if self.opt.device == 'cuda':
+            self.model.cuda()
 
 
     def forward_pass(self, images, target, infgt):
@@ -430,6 +434,7 @@ class SpectralSignature(ApplyK):
                 activations = self.model(images)  # Obtain activations
                 significant_data_points = self.spectral_analysis(activations)
                 # Filter out significant data points based on spectral analysis for this training step
+                print("remove: ", len(significant_data_points))
                 filtered_images = images[~significant_data_points]
                 filtered_targets = target[~significant_data_points]
                 # Perform training step with filtered data
@@ -493,6 +498,8 @@ class ActivationClustering(ApplyK):
         
         # Identify unlearning targets based on cluster analysis
         unlearning_targets = self._identify_unlearning_targets(cluster_labels)
+
+        print("remove: ", len(unlearning_targets))
         
         # Filter out the unlearning targets from the train_loader
         new_train_loader = self._filter_loader(train_loader, unlearning_targets)
@@ -552,7 +559,6 @@ class TorchInfluenceFunction(ApplyK):
         wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
         wrapped_test_loader = DataLoader(DataSetWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
         influence_dict = self.eval_influence(wrapped_train_loader, wrapped_test_loader)
-        '''
         harmful_scores = set()
         for test_id, data in influences_dict.items():
             for idx in data['influence']:
@@ -562,7 +568,7 @@ class TorchInfluenceFunction(ApplyK):
                     harmful_scores[idx] = data['influence'][idx]
         # Identify the indices of samples to be removed
         sorted_harmful = sorted(harmful_scores.items(), key=lambda x: x[1], reverse=True)
-        remove_indices = set([idx for idx, _ in sorted_harmful[:10]])  # Consider the top 10 harmful
+        remove_indices = set([idx for idx, _ in sorted_harmful[:100]])  # Consider the top 10 harmful
 
         # Create a new DataLoader without the harmful samples
         new_dataset = [d for i, d in enumerate(train_loader.dataset) if i not in remove_indices]
@@ -570,7 +576,7 @@ class TorchInfluenceFunction(ApplyK):
 
         # Re-train the model using the new DataLoader
         self.train_model(new_train_loader)
-        self.eval(test_loader)'''
+        self.eval(test_loader)
 
     def train_model(self, train_loader):
         self.model.train()
@@ -699,7 +705,7 @@ class FlippingInfluence(Naive):
         self.task = ClassificationTask()
         self.model = prepare_model(model=self.model, task=self.task)
         self.analyzer = Analyzer(analysis_name='unlearn_analysis', model=self.model, task=self.task)
-        self.n_tolerate = 2
+        self.n_tolerate = 10
 
     def fit_influence_factors(self, train_loader):
         # Fit all EKFAC factors for the given model
@@ -737,6 +743,7 @@ class FlippingInfluence(Naive):
     def detect_poisons(self, train_loader, deletion_loader):
         wrapped_train_dataset = DataSetWrapper(CollectedDataset(train_loader))
         wrapped_deletion_dataset = DataSetWrapper(CollectedDataset(deletion_loader))
+        
         # Step 1: Calculate initial influence scores
         original_scores = self.compute_influences(wrapped_train_dataset, wrapped_deletion_dataset)
 
@@ -754,17 +761,40 @@ class FlippingInfluence(Naive):
         delta_scores = flipped_scores - original_scores
         print(type(delta_scores), delta_scores.size())
         
-        # Step 5: Detect poisons per class
-        poison_indices = []
-        for i, data in enumerate(wrapped_train_dataset):
-            img = data[0]
-            target = data[1]
-            class_mask = (CollectedDataset(deletion_loader).targets == target)
-            class_indices = torch.where(class_mask)[0]
-            if delta_scores[class_indices, i] < self.n_tolerate:
-                poison_indices.extend(i)
+        collected_targets = CollectedDataset(deletion_loader).targets
+        train_targets = torch.tensor([data[1] for data in wrapped_train_dataset])
 
-        return set(poison_indices)
+        # Convert collected_targets and wrapped_train_dataset targets to tensors for efficient indexing
+        collected_targets = torch.tensor(collected_targets)
+
+        class_mask = (train_targets[:, None] == collected_targets[None, :])
+        # Get indices where class_mask is True
+        class_indices = [torch.where(mask)[0] for mask in class_mask]
+        # Find the maximum length for padding
+        max_length = max(len(idx) for idx in class_indices)
+        padded_tensors = []
+
+        for i, idx in enumerate(class_indices):
+            if len(idx) > 0:
+                tensor = delta_scores[i, idx]
+                if tensor.size(0) < max_length:
+                    padding = (0, max_length - tensor.size(0))
+                    padded_tensor = torch.nn.functional.pad(tensor, padding, mode='constant', value=0)
+                else:
+                    padded_tensor = tensor
+                padded_tensors.append(padded_tensor)
+        delta_scores_sub = torch.stack(padded_tensors)
+
+        # Calculate the number of negative scores for each row in delta_scores_sub
+        negative_counts = (delta_scores_sub < 0).sum(dim=1)
+
+        # Determine which rows have negative_counts less than self.n_tolerate
+        valid_indices = torch.where(negative_counts < self.n_tolerate)[0]
+
+        # Convert valid_indices to a set for consistency with the original code
+        poison_indices = set(valid_indices.tolist())
+
+        return poison_indices
 
     def filter_training_data(self, train_loader, harmful_indices):
         # Filter out harmful data points
@@ -775,6 +805,9 @@ class FlippingInfluence(Naive):
     def unlearn(self, train_loader, test_loader, deletion_loader):
         self.fit_influence_factors(train_loader)
         harmful_indices = self.detect_poisons(train_loader, deletion_loader)
+        print("remove samples: ")
+        for i in harmful_indices:
+            print(i)
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
         while self.curr_step < self.opt.train_iters:
             self.train_one_epoch(new_train_loader)
