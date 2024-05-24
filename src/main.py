@@ -1,14 +1,18 @@
 import torch, methods, resnet, timm
 import numpy as np
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from os import makedirs
 from os.path import exists
 from torch.utils.data.sampler import SubsetRandomSampler
 from opts import parse_args 
 from utils import seed_everything, SubsetSequentialSampler, get_targeted_classes  
-from datasets import load_dataset, DatasetWrapper, manip_dataset, get_deletion_set
+from dataset import load_dataset, DatasetWrapper, manip_dataset, get_deletion_set
 
 
 if __name__ == '__main__':
+
     torch.multiprocessing.set_sharing_strategy('file_system')
     seed_everything(seed=0)
     opt = parse_args()
