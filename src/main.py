@@ -1,8 +1,7 @@
 import torch, methods, resnet, timm
 import numpy as np
 import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+import os 
 from os import makedirs
 from os.path import exists
 from torch.utils.data.sampler import SubsetRandomSampler
@@ -114,7 +113,7 @@ if __name__ == '__main__':
     elif opt.unlearn_method in ['InfluenceFunction']:
         method.unlearn(train_loader=train_loader, test_loader=test_loader)
     elif opt.unlearn_method in ['FlippingInfluence']:
-        method.unlearn(train_loader=train_loader, test_loader=test_loader, deletion_loader=forget_loader)
+        method.unlearn(train_loader=train_loader, test_loader=test_loader, deletion_loader=forget_loader, n_tolerate=0, save_dir=os.path.dirname(os.getcwd())+'/models/FlippingInfluence.npy')
     
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..')

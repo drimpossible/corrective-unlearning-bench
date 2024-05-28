@@ -650,8 +650,8 @@ class InfluenceFunction(Naive):
         )
 
     def compute_influences(self, test_loader, train_loader):
-        wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
-        wrapped_test_loader = DataLoader(DataSetWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
+        wrapped_train_loader = DataSetWrapper(CollectedDataset(train_loader))
+        wrapped_test_loader = DataSetWrapper(CollectedDataset(test_loader))
         # Compute all pairwise influence scores with the computed factors
         self.analyzer.compute_pairwise_scores(
             scores_name="unlearn_scores",
@@ -672,6 +672,9 @@ class InfluenceFunction(Naive):
 
         # Identify training samples with the highest influence scores
         harmful_indices = self.identify_harmful(influences)
+        print("remove samples: ", len(harmful_indices))
+        for i in harmful_indices:
+            print(i)
 
         # Filter out the most harmful training samples
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
