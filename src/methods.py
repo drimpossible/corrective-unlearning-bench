@@ -717,7 +717,7 @@ class FlippingInfluence(Naive):
         self.analyzer.fit_all_factors(
             factors_name="ekfac",
             dataset=wrapped_train_dataset,
-            per_device_batch_size=50,
+            per_device_batch_size=25,
             factor_args=FactorArguments(strategy='ekfac'),
             overwrite_output_dir=True,
         )
@@ -726,13 +726,9 @@ class FlippingInfluence(Naive):
         self.analyzer.compute_pairwise_scores(
             scores_name=score_name, 
             factors_name="ekfac",
-            ####################################
-            # query_dataset=train_loader,
-            # train_dataset=deletion_loader,
-            ####################################
             train_dataset=train_loader,
             query_dataset=deletion_loader,
-            per_device_query_batch_size=50,
+            per_device_query_batch_size=25,
             overwrite_output_dir=True
         )
         return self.analyzer.load_pairwise_scores(score_name)
@@ -806,7 +802,7 @@ class FlippingInfluence(Naive):
     def unlearn(self, n_tolerate, train_loader, test_loader, deletion_loader, save_dir):
         self.fit_influence_factors(train_loader)
         harmful_indices = self.detect_poisons(n_tolerate, train_loader, deletion_loader, save_dir)
-        print(f"remove samples: ({len(harmful_indices)})")
+        # print(f"remove samples: ({len(harmful_indices)})")
         for i in harmful_indices:
             print(i)
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)

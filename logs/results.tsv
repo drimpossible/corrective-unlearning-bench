@@ -1,6 +1,0 @@
-dataset	model	dataset_method	forget_set_size	patch_size	pretrain_iters	pretrain_lr	unlearn_method	exp_name	train_iters	k	factor	kd_T	gamma	alpha	msteps	delete_acc	delete_err	manip_acc	test_acc	manip_clean_acc	test_clean_acc	test_retain_acc	deletion_size	unlearn_time	train_clean_acc
-CIFAR10	resnet9	poisoning	2000	3	1000	0.025	InfluenceFunction	unlearn	Null	Null	Null	Null	Null	Null	Null	0.288	0.796	0.2875	0.2934	0.791	0.7978	Null	250	0	0.83338
-CIFAR10	resnet9	poisoning	2000	3	1000	0.025	Naive	pretrainmodel	Null	Null	Null	Null	Null	Null	Null	0.0	101.0	0.162	0.1499	0.855	0.8576	Null	0	24.713809919999996	0.90816
-CIFAR10	resnet9	poisoning	2000	3	1000	0.025	FlippingInfluence	unlearn	Null	Null	Null	Null	Null	Null	Null	0.164	0.928	0.142	0.144	0.877	0.8765	Null	250	0	0.93562
-CIFAR10	resnet9	poisoning	2000	3	1000	0.025	ActivationClustering	unlearn	Null	Null	Null	Null	Null	Null	Null	0.124	0.96	0.1555	0.1418	0.806	0.7921	Null	250	0	0.8324
-CIFAR10	resnet9	poisoning	2000	3	1000	0.025	SpectralSignature	unlearn	Null	Null	Null	Null	Null	Null	Null	0.156	0.92	0.187	0.1686	0.7795	0.767	Null	250	0	0.79978
