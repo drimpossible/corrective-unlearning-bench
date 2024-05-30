@@ -1,0 +1,3 @@
+dataset	model	dataset_method	forget_set_size	patch_size	pretrain_iters	pretrain_lr	unlearn_method	exp_name	train_iters	k	factor	kd_T	gamma	alpha	msteps	delete_acc	delete_err	manip_acc	test_acc	manip_clean_acc	test_clean_acc	test_retain_acc	deletion_size	unlearn_time	train_clean_acc
+CIFAR10	resnet9	poisoning	2000	3	7500	0.025	Naive	pretrainmodel	Null	Null	Null	Null	Null	Null	Null	0.0	101.0	0.137	0.128	0.8965	0.9167	Null	0	383.5126080610001	0.99568
+CIFAR10	resnet9	poisoning	2000	3	7500	0.025	FlippingInfluence	unlearn	Null	Null	Null	Null	Null	Null	Null	0.5445	0.557	0.5445	0.5034	0.908	0.9151	Null	2000	0	0.99336
