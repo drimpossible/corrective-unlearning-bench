@@ -6,7 +6,7 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='CIFAR10', choices=['CIFAR10','CIFAR100','PCAM', 'LFWPeople', 'CelebA', 'DermNet', 'Pneumonia'])
     parser.add_argument('--model', type=str, default='resnet9', choices=['resnet9', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110', 'resnetwide28x10', 'vitb16'])
     parser.add_argument('--dataset_method', type=str, default='poisoning', choices=['randomlabelswap', 'interclasslabelswap', 'poisoning'], help='Number of Classes')
-    parser.add_argument('--unlearn_method', type=str, default='Naive', choices=['Naive', 'EU', 'CF', 'Scrub', 'BadT', 'SSD', 'ActivationClustering', 'SpectralSignature', 'InfluenceFunction', 'FlippingInfluence'], help='Method for unlearning')
+    parser.add_argument('--unlearn_method', type=str, default='Naive', choices=['Naive', 'EU', 'CF', 'Scrub', 'BadT', 'SSD', 'ActivationClustering', 'SpectralSignature', 'InfluenceFunction', 'FlippingInfluence', 'Clean'], help='Method for unlearning')
     parser.add_argument('--num_classes', type=int, default=10, choices=[2, 10, 100], help='Number of Classes')
     parser.add_argument('--forget_set_size', type=int, default=500, help='Number of samples to be manipulated')
     parser.add_argument('--patch_size', type=int, default=3, help='Creates a patch of size patch_size x patch_size for poisoning at bottom right corner of image')

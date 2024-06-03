@@ -10,6 +10,9 @@ from torch.nn import functional as F
 import itertools
 from sklearn.cluster import KMeans
 import torch.nn as nn
+import torch.optim as optim
+import torch.nn as nn
+from torch.cuda.amp import GradScaler, autocast
 import sys
 # import pytorch_influence_functions as ptif
 from torch.utils.data import Dataset, DataLoader
@@ -30,6 +33,17 @@ class DataSetWrapper(Dataset):
     def __getitem__(self, idx):
         data = self.dataset[idx]
         return data[0], data[1]  
+
+class IndexedDataset(torch.utils.data.Dataset):
+    def __init__(self, original_dataset):
+        self.dataset = original_dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        data, target = self.dataset[idx]
+        return idx, data, target
 
 class CollectedDataset(Dataset):
     """Aggregates all data into a single dataset from a DataLoader."""
@@ -425,27 +439,32 @@ class SpectralSignature(ApplyK):
         return significant_data_points
 
     def unlearn(self, train_loader, test_loader, eval_loaders=None):
-        # Example of unlearning based on spectral analysis (this is a simplified example)
-        self.model.train()
-        for images, target, infgt in train_loader:
-            images, target = images.cuda(), target.cuda()
-            with autocast():
-                self.optimizer.zero_grad()
-                activations = self.model(images)  # Obtain activations
-                significant_data_points = self.spectral_analysis(activations)
-                # Filter out significant data points based on spectral analysis for this training step
-                print("remove: ", len(significant_data_points))
-                filtered_images = images[~significant_data_points]
-                filtered_targets = target[~significant_data_points]
-                # Perform training step with filtered data
-                if len(filtered_images) > 0:  # Check if there are any data points left after filtering
-                    output = self.model(filtered_images)
-                    loss = F.cross_entropy(output, filtered_targets)
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.scheduler.step()
-        super(SpectralSignature, self).eval(test_loader)
+        activations_list = []
+        self.model.eval()
+        with torch.no_grad():
+            for images, target, infgt in train_loader:
+                images = images.cuda()
+                activations = self.model(images)
+                activations_list.append(activations)
+        all_activations = torch.cat(activations_list, dim=0)
+        significant_data_points = self.spectral_analysis(all_activations)
+        filtered_dataset = [
+            data for i, data in enumerate(train_loader.dataset)
+            if i not in significant_data_points.nonzero()
+        ]
+        new_train_loader = DataLoader(filtered_dataset, batch_size=train_loader.batch_size, shuffle=False)
+        self.model = unlearn_func(self.model, 'EU')
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+        self.scaler = torch.cuda.amp.GradScaler()
+        print(f"Retraining model without {len(significant_data_points)} identified targets.")
+
+        # Retrain the model with the filtered dataset
+        for epoch in range(self.opt.unlearn_iters):
+            self.train_one_epoch(new_train_loader)
+        self.eval(test_loader)
+        
+        print("Unlearning process completed.")
+
 
     def get_save_prefix(self):
         self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
@@ -485,12 +504,12 @@ class ActivationClustering(ApplyK):
     def _filter_loader(self, loader, targets):
         # Assuming loader.dataset is a list or similar; adjust for actual data structure
         filtered_dataset = [data for i, data in enumerate(loader.dataset) if i not in targets]
-        return torch.utils.data.DataLoader(filtered_dataset, batch_size=loader.batch_size, shuffle=True)
+        return torch.utils.data.DataLoader(filtered_dataset, batch_size=loader.batch_size, shuffle=False)
 
-    def unlearn(self, train_loader, test_loader, forget_loader, eval_loaders=None):
+    def unlearn(self, train_loader, test_loader, eval_loaders=None):
         print("Starting unlearning process...")
 
-        # Get activations from the model for the forget_loader dataset
+        # Get activations from the model 
         activations = self._get_activations(train_loader)
         
         # Perform activation clustering on these activations
@@ -503,6 +522,9 @@ class ActivationClustering(ApplyK):
         
         # Filter out the unlearning targets from the train_loader
         new_train_loader = self._filter_loader(train_loader, unlearning_targets)
+        self.model = unlearn_func(self.model, 'EU')
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+        self.scaler = torch.cuda.amp.GradScaler()
 
         print(f"Retraining model without {len(unlearning_targets)} identified targets.")
         
@@ -533,61 +555,6 @@ class ActivationClustering(ApplyK):
         self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
         self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
-    
-class TorchInfluenceFunction(ApplyK):
-    def __init__(self, opt, model, prenet=None):
-        super().__init__(opt, model, prenet)
-        ptif.init_logging()
-        self.config = ptif.get_default_config()
-        self.config.update({
-            'gpu': 0,  
-            'recursion_depth': 1000,
-            'r': 1,
-            'damp': 0.01,
-            'scale': 25,
-            'outdir': '../InfluenceFunction/influence_output',  # Ensure this directory exists
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-        })
-        self.threshold = 0
-
-    def eval_influence(self, train_loader, test_loader):
-        self.model.eval()
-        influences_dict = ptif.calc_img_wise(self.config, self.model, train_loader, test_loader)
-        return influences_dict
-
-    def unlearn(self, train_loader, test_loader):
-        wrapped_train_loader = DataLoader(DataSetWrapper(train_loader.dataset), batch_size=train_loader.batch_size, shuffle=False, num_workers=train_loader.num_workers, pin_memory=True)
-        wrapped_test_loader = DataLoader(DataSetWrapper(test_loader.dataset), batch_size=test_loader.batch_size, shuffle=False, num_workers=test_loader.num_workers, pin_memory=True)
-        influence_dict = self.eval_influence(wrapped_train_loader, wrapped_test_loader)
-        harmful_scores = set()
-        for test_id, data in influences_dict.items():
-            for idx in data['influence']:
-                if idx not in harmful_scores:
-                    harmful_scores[idx] = data['influence'][idx] 
-                elif data['influence'][idx] < harmful_scores[idx]: 
-                    harmful_scores[idx] = data['influence'][idx]
-        # Identify the indices of samples to be removed
-        sorted_harmful = sorted(harmful_scores.items(), key=lambda x: x[1], reverse=True)
-        remove_indices = set([idx for idx, _ in sorted_harmful[:100]])  # Consider the top 10 harmful
-
-        # Create a new DataLoader without the harmful samples
-        new_dataset = [d for i, d in enumerate(train_loader.dataset) if i not in remove_indices]
-        new_train_loader = torch.utils.data.DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
-
-        # Re-train the model using the new DataLoader
-        self.train_model(new_train_loader)
-        self.eval(test_loader)
-
-    def train_model(self, train_loader):
-        self.model.train()
-        for epoch in range(self.opt.num_epochs):
-            self.train_one_epoch(train_loader)
-
-    def get_save_prefix(self):
-        self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
-        self.unlearn_file_prefix += '_'+str(self.opt.train_iters)+'_'+str(self.opt.k)
-        self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
-        return self.unlearn_file_prefix
 
 BATCH_TYPE = Tuple[torch.Tensor, torch.Tensor]
 
@@ -598,7 +565,10 @@ class ClassificationTask(Task):
         model: torch.nn.Module,
         sample: bool = False,
     ) -> torch.Tensor:
-        inputs, labels = batch
+        if len(batch) == 3:
+            inputs, labels, _ = batch
+        else:
+            inputs, labels = batch
         logits = model(inputs)
         if not sample:
             return torch.nn.functional.cross_entropy(logits, labels, reduction="sum")
@@ -673,14 +643,15 @@ class InfluenceFunction(Naive):
         # Identify training samples with the highest influence scores
         harmful_indices = self.identify_harmful(influences)
         print("remove samples: ", len(harmful_indices))
-        for i in harmful_indices:
-            print(i)
 
         # Filter out the most harmful training samples
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
+        self.model = unlearn_func(self.model, 'EU')
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
+        self.scaler = torch.cuda.amp.GradScaler()
 
         # Re-train the model with the filtered training set using existing methods
-        while self.curr_step < self.opt.train_iters:
+        while self.curr_step < self.opt.unlearn_iters:
             self.train_one_epoch(new_train_loader)
             self.eval(test_loader)
 
@@ -693,7 +664,7 @@ class InfluenceFunction(Naive):
     def filter_training_data(self, train_loader, harmful_indices):
         # Filter out harmful data points
         new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
-        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=False)
         return new_train_loader
 
     def get_save_prefix(self):
@@ -741,7 +712,7 @@ class FlippingInfluence(Naive):
             flipped_images.append(flipped_image) 
             targets.append(target)
         flipped_dataset = CustomDataset(flipped_images, targets)  
-        return DataLoader(flipped_dataset, batch_size=50, shuffle=True) 
+        return DataLoader(flipped_dataset, batch_size=50, shuffle=False) 
 
     def detect_poisons(self, n_tolerate, train_loader, deletion_loader, save_dir):
         wrapped_train_dataset = DataSetWrapper(CollectedDataset(train_loader))
@@ -796,17 +767,20 @@ class FlippingInfluence(Naive):
     def filter_training_data(self, train_loader, harmful_indices):
         # Filter out harmful data points
         new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
-        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+        print("new dataset", len(new_dataset), "train loader", len(train_loader.dataset))
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=False)
         return new_train_loader
 
-    def unlearn(self, n_tolerate, train_loader, test_loader, deletion_loader, save_dir):
+    def unlearn(self, n_tolerate, train_loader, test_loader, deletion_loader, deletion_idx, save_dir):
         self.fit_influence_factors(train_loader)
         harmful_indices = self.detect_poisons(n_tolerate, train_loader, deletion_loader, save_dir)
+        harmful_indices.update(deletion_idx.tolist())
         # print(f"remove samples: ({len(harmful_indices)})")
-        for i in harmful_indices:
-            print(i)
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
-        while self.curr_step < self.opt.train_iters:
+        #self.model = unlearn_func(self.model, 'EU')
+        #self.optimizer = optim.SGD(self.model.parameters(), lr=self.opt.unlearn_lr)
+        #self.scaler = torch.cuda.amp.GradScaler()
+        while self.curr_step < self.opt.unlearn_iters:
             self.train_one_epoch(new_train_loader)
             self.eval(test_loader)
 

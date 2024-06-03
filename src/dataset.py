@@ -151,7 +151,8 @@ class DatasetWrapper(data.Dataset):
             if int(index) in self.manip_dict: # Do nasty things while selecting samples from the manip set
                 label = self.manip_dict[int(index)]
                 if self.corrupt_val is not None:
-                    image[:,-self.corrupt_size:,-self.corrupt_size:] = self.corrupt_val # Have the bottom right corner of the image as the poison
+                    # Have the bottom right corner of the image as the poison
+                    image[:,-self.corrupt_size:,-self.corrupt_size:] = self.corrupt_val 
         if self.delete_idx is None:
             self.delete_idx = torch.tensor(list(self.manip_dict.keys()))
         indel = int(index in self.delete_idx)
