@@ -2,6 +2,7 @@ import torch, torchmetrics, tqdm, copy, time
 from utils import LinearLR, unlearn_func, ssd_tuning, distill_kl_loss, compute_accuracy
 from torch.cuda.amp import autocast
 import numpy as np
+import resnet
 from torch.cuda.amp import GradScaler
 from pathlib import Path
 from os import makedirs
@@ -12,8 +13,8 @@ from sklearn.cluster import KMeans
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
 import sys
+sys.path.append('/data/jiawei_li/corrective-unlearning-bench/src')
 # import pytorch_influence_functions as ptif
 from torch.utils.data import Dataset, DataLoader
 from kronfluence.analyzer import Analyzer, prepare_model
@@ -21,6 +22,8 @@ from kronfluence.task import Task
 from typing import Tuple
 from torchvision import transforms
 from kronfluence.arguments import FactorArguments
+from utils import get_targeted_classes
+from dataset import DatasetWrapper
 
 class DataSetWrapper(Dataset):
     """ Wrap the dataset to return only images and targets, as expected by ptif """
@@ -136,13 +139,25 @@ class Naive():
             with autocast():
                 self.optimizer.zero_grad()
                 loss = self.forward_pass(images, target, infgt)
-                self.scaler.scale(loss).backward()
+                print("Loss:", loss.item())
+            self.scaler.scale(loss).backward()
+            found_nan_or_inf = False
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                        found_nan_or_inf = True
+                        print("NaN or Inf found in gradients")
+                        break
+
+            if not found_nan_or_inf:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.scheduler.step()
-                self.curr_step += 1
-                if self.curr_step > self.opt.train_iters:
-                    break
+            else:
+                print("Skipping optimizer step due to NaN or Inf in gradients")
+            self.scheduler.step()
+            self.curr_step += 1
+            if self.curr_step > self.opt.train_iters:
+                break
 
         top1 = self.top1.compute().item()
         self.top1.reset()
@@ -679,7 +694,6 @@ class FlippingInfluence(Naive):
         self.task = ClassificationTask()
         self.model = prepare_model(model=self.model, task=self.task)
         self.analyzer = Analyzer(analysis_name='unlearn_analysis', model=self.model, task=self.task)
-        self.n_tolerate = 1
 
     def fit_influence_factors(self, train_loader):
         # Fit all EKFAC factors for the given model
@@ -744,7 +758,7 @@ class FlippingInfluence(Naive):
         # known_poison_targets = torch.tensor([data[1] for data in wrapped_flipped_dataset]) # 500
 
         # Convert collected_targets and wrapped_train_dataset targets to tensors for efficient indexing
-        collected_targets = torch.tensor(collected_targets)
+        collected_targets = collected_targets.clone().detach()
         # collected_targets == known_poison_targets
 
         # Calculate the number of positive scores for each row in delta_scores_sub
@@ -768,7 +782,7 @@ class FlippingInfluence(Naive):
         # Filter out harmful data points
         new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
         print("new dataset", len(new_dataset), "train loader", len(train_loader.dataset))
-        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=False)
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
         return new_train_loader
 
     def unlearn(self, n_tolerate, train_loader, test_loader, deletion_loader, deletion_idx, save_dir):
@@ -777,9 +791,13 @@ class FlippingInfluence(Naive):
         harmful_indices.update(deletion_idx.tolist())
         # print(f"remove samples: ({len(harmful_indices)})")
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
-        #self.model = unlearn_func(self.model, 'EU')
-        #self.optimizer = optim.SGD(self.model.parameters(), lr=self.opt.unlearn_lr)
-        #self.scaler = torch.cuda.amp.GradScaler()
+        # retrain from scratch
+        #model = getattr(resnet, self.opt.model)(self.opt.num_classes)
+        #super().__init__(self.opt, model, None)  
+        # exact unlearn
+        self.model = unlearn_func(self.model, 'EU')
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
+        self.scaler = GradScaler()
         while self.curr_step < self.opt.unlearn_iters:
             self.train_one_epoch(new_train_loader)
             self.eval(test_loader)
@@ -790,3 +808,110 @@ class FlippingInfluence(Naive):
         self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
 
+class SwappingInfluence(Naive):
+    def __init__(self, opt, model, prenet=None):
+        super().__init__(opt, model, prenet)
+        self.task = ClassificationTask()
+        self.model = prepare_model(model=self.model, task=self.task)
+        self.analyzer = Analyzer(analysis_name='unlearn_analysis', model=self.model, task=self.task)
+        self.threshold = 0.0
+        self.num_topk = 500
+
+    def fit_influence_factors(self, train_loader):
+        collected_train_data = CollectedDataset(train_loader)
+        wrapped_train_dataset = DataSetWrapper(collected_train_data)
+        self.analyzer.fit_all_factors(
+            factors_name="ekfac",
+            dataset=wrapped_train_dataset,
+            per_device_batch_size=250,
+            factor_args=FactorArguments(strategy='ekfac'),
+            overwrite_output_dir=True,
+        )
+
+    def compute_influences(self, train_loader, query_loader, score_name):
+        self.analyzer.compute_pairwise_scores(
+            scores_name=score_name,
+            factors_name="ekfac",
+            train_dataset=train_loader,
+            query_dataset=query_loader,
+            per_device_query_batch_size=100,
+            overwrite_output_dir=True
+        )
+        return self.analyzer.load_pairwise_scores(score_name)
+
+    def detect_label_swap(self, train_loader, delete_idx, threshold=0, num_topk=500):
+        collected_train_data = CollectedDataset(train_loader)
+        wrapped_train_dataset = DataSetWrapper(collected_train_data)
+
+        # Focus on examples with the same label Y
+        deletion_samples = [train_loader.dataset[idx] for idx in delete_idx]
+        labels = [train_loader.dataset[idx][1] for idx in delete_idx]
+        unique_labels = set(labels)
+        detected_poisons = []
+
+        for Y in unique_labels:
+            # Step 1: Calculate influence scores on Q (influence on Y examples in deletion set)
+            query_dataset_Q = CustomDataset(
+                images=[example[0] for example in deletion_samples if example[1] == Y],
+                targets=[example[1] for example in deletion_samples if example[1] == Y]
+            )
+            print(f"Length of images: {len(query_dataset_Q.images)}")
+            print(f"Length of targets: {len(query_dataset_Q.targets)}")
+            old_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q, "old_scores")['all_modules']
+
+            # Step 2: Calculate influence scores on Q' (influence on Y examples in training set)
+            query_dataset_Q_prime = CustomDataset(
+                images=[example[0] for example in wrapped_train_dataset if example[1] == Y],
+                targets=[example[1] for example in wrapped_train_dataset if example[1] == Y]
+            )
+            print(f"Length of images: {len(query_dataset_Q_prime.images)}")
+            print(f"Length of targets: {len(query_dataset_Q_prime.targets)}")
+            new_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q_prime, "new_scores")['all_modules']
+            print("size old scores:", old_scores.size(), "size new scores:", new_scores.size())
+
+            # Step 3: Calculate delta scores
+            old_scores = old_scores.mean(dim=0)
+            new_scores = new_scores.mean(dim=0)
+            delta_scores = abs(new_scores - old_scores)
+
+            # Step 4: Identify detected poisons
+            print("delta socre size:", delta_scores.size(), max(delta_scores), min(delta_scores))
+            delta_scores_np = delta_scores.cpu().numpy()  # Convert to numpy array if needed
+            np.savez("delta_scores.npz", delta_scores=delta_scores_np)
+            detected_poison = [i for i, score in enumerate(delta_scores) if score > threshold]
+            #sorted_indexes = np.argsort(delta_scores_np)[::-1]
+            #detected_poison = sorted_indexes[:num_topk].tolist()
+            detected_poisons.append(detected_poison)
+
+        return detected_poisons
+
+    def unlearn(self, train_loader, test_loader, delete_idx, threshold=0, num_topk=500):
+        # Fit influence factors
+        self.fit_influence_factors(train_loader)
+        harmful_indices = self.detect_label_swap(train_loader, delete_idx,threshold=threshold, num_topk=num_topk)
+        print(f"Detected {len(harmful_indices)} poisons ...")
+
+        # Filter out the harmful data points
+        new_train_loader = self.filter_training_data(train_loader, harmful_indices)  
+        
+        # Apply Exact Unlearning (EU) to the model
+        self.model = unlearn_func(self.model, 'EU')
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
+        self.scaler = GradScaler()
+        
+        # Retrain the model with the filtered training set
+        while self.curr_step < self.opt.unlearn_iters:
+            self.train_one_epoch(new_train_loader)
+            self.eval(test_loader)
+
+    def filter_training_data(self, train_loader, harmful_indices):
+        new_dataset = [data for i, data in enumerate(train_loader.dataset) if i not in harmful_indices]
+        print(f"Filtered dataset: {len(new_dataset)} samples remaining.")
+        new_train_loader = DataLoader(new_dataset, batch_size=train_loader.batch_size, shuffle=True)
+        return new_train_loader
+
+    def get_save_prefix(self):
+        self.unlearn_file_prefix = self.opt.pretrain_file_prefix + '/' + str(self.opt.deletion_size) + '_' + self.opt.unlearn_method + '_' + self.opt.exp_name
+        self.unlearn_file_prefix += '_' + str(self.opt.train_iters) + '_' + str(self.opt.k)
+        self.unlearn_file_prefix += '_' + str(self.opt.kd_T) + '_' + str(self.opt.alpha) + '_' + str(self.opt.msteps)
+        return

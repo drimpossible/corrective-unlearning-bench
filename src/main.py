@@ -44,11 +44,11 @@ if __name__ == '__main__':
         corrupt_val = np.array(max_val)
         corrupt_size = opt.patch_size
         wtrain_noaug_adv_cleanL_set = DatasetWrapper(train_noaug_set, manip_dict, mode='test_adversarial', corrupt_val=corrupt_val, corrupt_size=corrupt_size)
-        adversarial_train_loader = torch.utils.data.DataLoader(wtrain_noaug_adv_cleanL_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+        adversarial_train_loader = torch.utils.data.DataLoader(wtrain_noaug_adv_cleanL_set, batch_size=opt.batch_size, shuffle=True, num_workers=4, pin_memory=True)
         untouched_noaug_cleanL_loader = torch.utils.data.DataLoader(wtrain_noaug_adv_cleanL_set, batch_size=opt.batch_size, shuffle=False, sampler=SubsetSequentialSampler(untouched_idx), num_workers=4, pin_memory=True)
         manip_noaug_cleanL_loader = torch.utils.data.DataLoader(wtrain_noaug_adv_cleanL_set, batch_size=opt.batch_size, shuffle=False, sampler=SubsetSequentialSampler(manip_idx), num_workers=4, pin_memory=True)
         wtest_adv_cleanL_set = DatasetWrapper(test_set, manip_dict, mode='test_adversarial', corrupt_val=corrupt_val, corrupt_size=corrupt_size)
-        adversarial_test_loader = torch.utils.data.DataLoader(wtest_adv_cleanL_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+        adversarial_test_loader = torch.utils.data.DataLoader(wtest_adv_cleanL_set, batch_size=opt.batch_size, shuffle=True, num_workers=4, pin_memory=True)
         eval_loaders['adv_test'] = adversarial_test_loader
     else:
         adversarial_train_loader, adversarial_test_loader, corrupt_val, corrupt_size = None, None, None, None
@@ -102,7 +102,7 @@ if __name__ == '__main__':
     wtrain_delete_set = DatasetWrapper(train_set, manip_dict, mode='pretrain', corrupt_val=corrupt_val, corrupt_size=corrupt_size, delete_idx=delete_idx)
     # Get the dataloaders
     retain_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=False, sampler=SubsetRandomSampler(retain_idx), num_workers=4, pin_memory=True)
-    train_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     train_loader_no_shuffle = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     forget_loader = torch.utils.data.DataLoader(wtrain_delete_set, batch_size=opt.batch_size, shuffle=False, sampler=SubsetRandomSampler(delete_idx), num_workers=4, pin_memory=True)
     
@@ -132,8 +132,10 @@ if __name__ == '__main__':
     elif opt.unlearn_method in ['FlippingInfluence']: 
         # save detected indicess
         save_dir = os.path.dirname(os.getcwd())+'/models/detected_poison_indices.npy'
-        n_tolerate = 5
+        n_tolerate = 25
         method.unlearn(n_tolerate = n_tolerate, train_loader=train_loader_no_shuffle, test_loader=test_loader, deletion_loader=delete_loader, deletion_idx=delete_idx, save_dir=save_dir) # no shuffle
+    elif opt.unlearn_method in ['SwappingInfluence']:
+        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=10000, num_topk=100)
 
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..') 
