@@ -135,7 +135,7 @@ if __name__ == '__main__':
         n_tolerate = 25
         method.unlearn(n_tolerate = n_tolerate, train_loader=train_loader_no_shuffle, test_loader=test_loader, deletion_loader=delete_loader, deletion_idx=delete_idx, save_dir=save_dir) # no shuffle
     elif opt.unlearn_method in ['SwappingInfluence']:
-        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=10000, num_topk=100)
+        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=500)
 
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..') 

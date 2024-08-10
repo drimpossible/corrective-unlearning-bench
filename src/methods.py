@@ -838,6 +838,16 @@ class SwappingInfluence(Naive):
             overwrite_output_dir=True
         )
         return self.analyzer.load_pairwise_scores(score_name)
+    
+    def flip_images(self, loader):
+        flipped_images = []
+        targets = []
+        for img, target in loader:
+            flipped_image = transforms.functional.hflip(img)
+            flipped_images.append(flipped_image) 
+            targets.append(target)
+        flipped_dataset = CustomDataset(flipped_images, targets)  
+        return DataLoader(flipped_dataset, batch_size=50, shuffle=False) 
 
     def detect_label_swap(self, train_loader, delete_idx, threshold=0, num_topk=500):
         collected_train_data = CollectedDataset(train_loader)
@@ -847,7 +857,7 @@ class SwappingInfluence(Naive):
         deletion_samples = [train_loader.dataset[idx] for idx in delete_idx]
         labels = [train_loader.dataset[idx][1] for idx in delete_idx]
         unique_labels = set(labels)
-        detected_poisons = []
+        detected_poisons = set()
 
         for Y in unique_labels:
             # Step 1: Calculate influence scores on Q (influence on Y examples in deletion set)
@@ -860,11 +870,14 @@ class SwappingInfluence(Naive):
             old_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q, "old_scores")['all_modules']
 
             # Step 2: Calculate influence scores on Q' (influence on Y examples in training set)
-            query_dataset_Q_prime = CustomDataset(
-                images=[example[0] for example in wrapped_train_dataset if example[1] == Y],
-                targets=[example[1] for example in wrapped_train_dataset if example[1] == Y]
-            )
-            print(f"Length of images: {len(query_dataset_Q_prime.images)}")
+            query_dataset_Q_prime_loader = self.flip_images(query_dataset_Q)
+            query_dataset_Q_prime = CollectedDataset(query_dataset_Q_prime_loader)
+
+            #query_dataset_Q_prime = CustomDataset(
+            #    images=[example[0] for example in wrapped_train_dataset if example[1] == Y],
+            #    targets=[example[1] for example in wrapped_train_dataset if example[1] == Y]
+            #)
+            print(f"Length of images: {len(query_dataset_Q_prime.data)}")
             print(f"Length of targets: {len(query_dataset_Q_prime.targets)}")
             new_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q_prime, "new_scores")['all_modules']
             print("size old scores:", old_scores.size(), "size new scores:", new_scores.size())
@@ -879,9 +892,9 @@ class SwappingInfluence(Naive):
             delta_scores_np = delta_scores.cpu().numpy()  # Convert to numpy array if needed
             np.savez("delta_scores.npz", delta_scores=delta_scores_np)
             detected_poison = [i for i, score in enumerate(delta_scores) if score > threshold]
-            #sorted_indexes = np.argsort(delta_scores_np)[::-1]
-            #detected_poison = sorted_indexes[:num_topk].tolist()
-            detected_poisons.append(detected_poison)
+            sorted_indexes = np.argsort(delta_scores_np)[::-1]
+            detected_poison = sorted_indexes[:num_topk].tolist()
+            detected_poisons.update(detected_poison)
 
         return detected_poisons
 
@@ -890,6 +903,7 @@ class SwappingInfluence(Naive):
         self.fit_influence_factors(train_loader)
         harmful_indices = self.detect_label_swap(train_loader, delete_idx,threshold=threshold, num_topk=num_topk)
         print(f"Detected {len(harmful_indices)} poisons ...")
+        harmful_indices.update(delete_idx)
 
         # Filter out the harmful data points
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)  
