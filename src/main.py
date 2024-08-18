@@ -32,7 +32,8 @@ if __name__ == '__main__':
     train_set, train_noaug_set, test_set, train_labels, max_val = load_dataset(dataset=opt.dataset, root=opt.data_dir)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=opt.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     manip_dict, manip_idx, untouched_idx = manip_dataset(dataset=opt.dataset, train_labels=train_labels, method=opt.dataset_method, manip_set_size=opt.forget_set_size, save_dir=opt.save_dir)
-    # manip_idx_path = save_dir+'/'+dataset+'_'+method+'_'+str(manip_set_size)+'_manip.npy'
+    with open('/data/jiawei_li/corrective-unlearning-bench/notebook/manip_idx.txt', 'w') as file:
+        file.write(', '.join(map(str, manip_idx.tolist()))) 
     print('==> Loaded the dataset! (clean)')
 
     wtrain_noaug_cleanL_set = DatasetWrapper(train_noaug_set, manip_dict, mode='test')
@@ -132,28 +133,10 @@ if __name__ == '__main__':
     elif opt.unlearn_method in ['FlippingInfluence']: 
         # save detected indicess
         save_dir = os.path.dirname(os.getcwd())+'/models/detected_poison_indices.npy'
-        n_tolerate = 25
+        n_tolerate = 10
         method.unlearn(n_tolerate = n_tolerate, train_loader=train_loader_no_shuffle, test_loader=test_loader, deletion_loader=delete_loader, deletion_idx=delete_idx, save_dir=save_dir) # no shuffle
     elif opt.unlearn_method in ['SwappingInfluence']:
-        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=500)
+        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=2000)
 
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..') 
-    
-    if opt.unlearn_method in ['FlippingInfluence']: 
-        #### inspect removed poisons and TPR&FPR ####
-
-        # load detected indices
-        detected_indices = np.load(save_dir, allow_pickle=True)
-        # candidate poisons given by the algorithm
-        print(f'len(manip_idx) = {len(manip_idx)}')
-        # add those known poisons
-        indices_to_be_removed = np.union1d(detected_indices, delete_idx)
-        print(f'len(indices_to_be_removed) = {len(indices_to_be_removed)}')
-        # true positives
-        true_positives_idx = np.setdiff1d(manip_idx, np.setdiff1d(manip_idx, indices_to_be_removed))
-        # {} detected, where all 2000 poisons are hit
-        # TPR
-        print(f'TPR = {len(true_positives_idx) / len(manip_idx)}')
-        # FPR
-        print(f'FPR = {(len(detected_indices) - len(manip_idx)) / (50000 - len(manip_idx))}')

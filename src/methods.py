@@ -751,30 +751,36 @@ class FlippingInfluence(Naive):
         delta_scores = flipped_scores - original_scores
         # print(type(delta_scores), delta_scores.size())
         # print(delta_scores)
-        
-        collected_targets = CollectedDataset(deletion_loader).targets
-        # labels_shown_in_test = np.unique(collected_targets.numpy()) # all 0 in this poisoning case, so no need to cope class by class --> todo
-        # train_targets = torch.tensor([data[1] for data in wrapped_train_dataset]) # 50000
-        # known_poison_targets = torch.tensor([data[1] for data in wrapped_flipped_dataset]) # 500
 
-        # Convert collected_targets and wrapped_train_dataset targets to tensors for efficient indexing
-        collected_targets = collected_targets.clone().detach()
-        # collected_targets == known_poison_targets
+        # Get the labels for the train and deletion datasets
+        train_labels = torch.tensor([sample[1] for sample in wrapped_train_dataset])
+        deletion_labels = torch.tensor([sample[1] for sample in wrapped_deletion_dataset])
+
+        # Ensure the labels are the same size as delta_scores
+        print("delta_scores.size:", delta_scores.size(0))
+        print("deletion_labels.size:", deletion_labels.size(0))
+        print("train_labels.size:", train_labels.size(0))
+        assert delta_scores.size(0) == deletion_labels.size(0) and delta_scores.size(1) == train_labels.size(0)
 
         # Calculate the number of positive scores for each row in delta_scores_sub
-        positive_counts = (delta_scores >= 0).sum(dim=0) # (500, 50000)
-        # print(f"positive_counts'shape = {positive_counts.shape}")
+        # but only count the scores where the labels match
+        label_match_mask = deletion_labels.unsqueeze(1) == train_labels.unsqueeze(0)
+        positive_delta_mask = delta_scores >= 0
+        combined_mask = label_match_mask & positive_delta_mask
+        positive_counts = combined_mask.sum(dim=0) 
 
         # Determine which cols have positive_counts less than self.n_tolerate
-        valid_indices = torch.where(positive_counts <= n_tolerate)[0]
+        valid_indices = torch.where(positive_counts > n_tolerate)[0]
 
         # Convert valid_indices to a set for consistency with the original code
         poison_indices = set(valid_indices.tolist())
         
-        # print(f"{len(poison_indices)} poisons detected...")
-        # print(f"poison_indices: {poison_indices}")
+        print(f"{len(poison_indices)} poisons detected...")
+        #print(f"poison_indices: {poison_indices}")
         # save detected indices (change to yours dir)
-        np.save(save_dir, valid_indices)
+        detected_idx_path = '/data/jiawei_li/corrective-unlearning-bench/notebook/harmful_idx.txt'
+        with open(detected_idx_path, 'w') as file:
+            file.write(', '.join(map(str, sorted(poison_indices))))
 
         return poison_indices
 
@@ -792,10 +798,11 @@ class FlippingInfluence(Naive):
         # print(f"remove samples: ({len(harmful_indices)})")
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
         # retrain from scratch
-        #model = getattr(resnet, self.opt.model)(self.opt.num_classes)
-        #super().__init__(self.opt, model, None)  
+        model = getattr(resnet, self.opt.model)(self.opt.num_classes)
+        super().__init__(self.opt, model, None)  
+        self.model = model
         # exact unlearn
-        self.model = unlearn_func(self.model, 'EU')
+        #self.model = unlearn_func(self.model, 'EU')
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
         self.scaler = GradScaler()
         while self.curr_step < self.opt.unlearn_iters:
@@ -857,6 +864,7 @@ class SwappingInfluence(Naive):
         deletion_samples = [train_loader.dataset[idx] for idx in delete_idx]
         labels = [train_loader.dataset[idx][1] for idx in delete_idx]
         unique_labels = set(labels)
+        print("unique labels:", unique_labels)
         detected_poisons = set()
 
         for Y in unique_labels:
@@ -870,29 +878,37 @@ class SwappingInfluence(Naive):
             old_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q, "old_scores")['all_modules']
 
             # Step 2: Calculate influence scores on Q' (influence on Y examples in training set)
-            query_dataset_Q_prime_loader = self.flip_images(query_dataset_Q)
-            query_dataset_Q_prime = CollectedDataset(query_dataset_Q_prime_loader)
+            #query_dataset_Q_prime_loader = self.flip_images(query_dataset_Q)
+            #query_dataset_Q_prime = CollectedDataset(query_dataset_Q_prime_loader)
 
-            #query_dataset_Q_prime = CustomDataset(
-            #    images=[example[0] for example in wrapped_train_dataset if example[1] == Y],
-            #    targets=[example[1] for example in wrapped_train_dataset if example[1] == Y]
-            #)
-            print(f"Length of images: {len(query_dataset_Q_prime.data)}")
-            print(f"Length of targets: {len(query_dataset_Q_prime.targets)}")
+            query_dataset_Q_prime = CustomDataset(
+                images=[example[0] for example in wrapped_train_dataset if example[1] == Y],
+                targets=[example[1] for example in wrapped_train_dataset if example[1] == Y]
+            )
+            #print(f"Length of images: {len(query_dataset_Q_prime.images)}")
+            #print(f"Length of targets: {len(query_dataset_Q_prime.targets)}")
             new_scores = self.compute_influences(wrapped_train_dataset, query_dataset_Q_prime, "new_scores")['all_modules']
             print("size old scores:", old_scores.size(), "size new scores:", new_scores.size())
 
             # Step 3: Calculate delta scores
-            old_scores = old_scores.mean(dim=0)
             new_scores = new_scores.mean(dim=0)
-            delta_scores = abs(new_scores - old_scores)
+            old_scores = old_scores.mean(dim=0)
+            old_ranks = np.argsort(np.argsort(old_scores,  axis=0), axis=0)
+            print(old_ranks)
+            new_ranks = np.argsort(np.argsort(new_scores,  axis=0), axis=0)
+            print(new_ranks)
+            #delta_scores = new_scores - old_scores
+            #delta_scores_np = delta_scores.cpu().numpy()
+            delta_ranks = new_ranks - old_ranks
+            delta_ranks_np = delta_ranks.cpu().numpy()
 
             # Step 4: Identify detected poisons
-            print("delta socre size:", delta_scores.size(), max(delta_scores), min(delta_scores))
-            delta_scores_np = delta_scores.cpu().numpy()  # Convert to numpy array if needed
-            np.savez("delta_scores.npz", delta_scores=delta_scores_np)
-            detected_poison = [i for i, score in enumerate(delta_scores) if score > threshold]
-            sorted_indexes = np.argsort(delta_scores_np)[::-1]
+            #np.savez("delta_scores.npz", delta_scores=delta_scores)
+            #negative_counts = (delta_scores < 0).sum(dim=0) 
+            #print("negative counts size:", negative_counts.size())
+            #negative_counts_np = negative_counts.cpu().numpy()
+            #detected_poison = [i for i, score in enumerate(delta_scores_np) if score > threshold]
+            sorted_indexes = np.argsort(delta_ranks_np)
             detected_poison = sorted_indexes[:num_topk].tolist()
             detected_poisons.update(detected_poison)
 
@@ -903,7 +919,10 @@ class SwappingInfluence(Naive):
         self.fit_influence_factors(train_loader)
         harmful_indices = self.detect_label_swap(train_loader, delete_idx,threshold=threshold, num_topk=num_topk)
         print(f"Detected {len(harmful_indices)} poisons ...")
-        harmful_indices.update(delete_idx)
+        harmful_indices.update(delete_idx.tolist())
+        manip_idx_path = '/data/jiawei_li/corrective-unlearning-bench/notebook/harmful_idx.txt'
+        with open(manip_idx_path, 'w') as file:
+            file.write(', '.join(map(str, sorted(harmful_indices))))
 
         # Filter out the harmful data points
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)  
