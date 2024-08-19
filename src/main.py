@@ -133,7 +133,7 @@ if __name__ == '__main__':
     elif opt.unlearn_method in ['FlippingInfluence']: 
         # save detected indicess
         save_dir = os.path.dirname(os.getcwd())+'/models/detected_poison_indices.npy'
-        n_tolerate = 10
+        n_tolerate = 25
         method.unlearn(n_tolerate = n_tolerate, train_loader=train_loader_no_shuffle, test_loader=test_loader, deletion_loader=delete_loader, deletion_idx=delete_idx, save_dir=save_dir) # no shuffle
     elif opt.unlearn_method in ['SwappingInfluence']:
         method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=2000)

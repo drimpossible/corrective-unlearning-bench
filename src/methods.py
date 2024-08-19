@@ -764,13 +764,14 @@ class FlippingInfluence(Naive):
 
         # Calculate the number of positive scores for each row in delta_scores_sub
         # but only count the scores where the labels match
-        label_match_mask = deletion_labels.unsqueeze(1) == train_labels.unsqueeze(0)
+        #label_match_mask = deletion_labels.unsqueeze(1) == train_labels.unsqueeze(0)
         positive_delta_mask = delta_scores >= 0
-        combined_mask = label_match_mask & positive_delta_mask
-        positive_counts = combined_mask.sum(dim=0) 
+        #combined_mask = label_match_mask & positive_delta_mask
+        #positive_counts = combined_mask.sum(dim=0) 
+        positive_counts = positive_delta_mask.sum(dim=0)
 
         # Determine which cols have positive_counts less than self.n_tolerate
-        valid_indices = torch.where(positive_counts > n_tolerate)[0]
+        valid_indices = torch.where(positive_counts <= n_tolerate)[0]
 
         # Convert valid_indices to a set for consistency with the original code
         poison_indices = set(valid_indices.tolist())
