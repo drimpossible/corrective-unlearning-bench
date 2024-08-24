@@ -123,20 +123,20 @@ if __name__ == '__main__':
     
     # start detection & unlearning
     if opt.unlearn_method in ['Naive', 'EU', 'CF', 'SpectralSignature', 'ActivationClustering', 'Clean']:
-        method.unlearn(train_loader=retain_loader, test_loader=test_loader, eval_loaders=eval_loaders)
+        method.unlearn(train_loader=train_loader_no_shuffle, test_loader=test_loader, eval_loaders=eval_loaders)
     elif opt.unlearn_method in ['BadT']:
         method.unlearn(train_loader=train_loader, test_loader=test_loader, eval_loaders=eval_loaders)
     elif opt.unlearn_method in ['Scrub', 'SSD']:
         method.unlearn(train_loader=retain_loader, test_loader=test_loader, forget_loader=forget_loader, eval_loaders=eval_loaders)
     elif opt.unlearn_method in ['InfluenceFunction']:
-        method.unlearn(train_loader=train_loader, test_loader=test_loader)
+        method.unlearn(train_loader=train_loader_no_shuffle, test_loader=test_loader)
     elif opt.unlearn_method in ['FlippingInfluence']: 
         # save detected indicess
         save_dir = os.path.dirname(os.getcwd())+'/models/detected_poison_indices.npy'
-        n_tolerate = 25
+        n_tolerate = 60
         method.unlearn(n_tolerate = n_tolerate, train_loader=train_loader_no_shuffle, test_loader=test_loader, deletion_loader=delete_loader, deletion_idx=delete_idx, save_dir=save_dir) # no shuffle
     elif opt.unlearn_method in ['SwappingInfluence']:
-        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=2000)
+        method.unlearn(train_loader_no_shuffle, test_loader, delete_idx, threshold=0, num_topk=3000)
 
     method.compute_and_save_results(train_test_loader, test_loader, adversarial_train_loader, adversarial_test_loader)
     print('==> Experiment completed! Exiting..') 

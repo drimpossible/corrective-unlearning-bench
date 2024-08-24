@@ -487,34 +487,51 @@ class SpectralSignature(ApplyK):
         self.unlearn_file_prefix += '_'+str(self.opt.kd_T)+'_'+str(self.opt.alpha)+'_'+str(self.opt.msteps)
         return
 
-class ActivationClustering(ApplyK):
+class ActivationClustering(Naive):
     def __init__(self, opt, model, prenet=None):
         super().__init__(opt, model, prenet)
+        self.task = ClassificationTask()
+        self.model = prepare_model(model=model, task=self.task)
         self.nb_clusters = 2  
         self.clusterer = KMeans(n_clusters=self.nb_clusters, random_state=0)
-        self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.opt.unlearn_lr)
-        self.epoch_loss = 0.0
 
     def _get_activations(self, data_loader):
-        activations = []
+        """
+        Get activations from the model for each class separately.
+        """
+        activations_by_class = {}
         self.model.eval()
         with torch.no_grad():
-            for images, _, _ in data_loader:
+            for images, labels, _ in data_loader:
                 images = images.to(self.opt.device)
                 output = self.model(images)
-                activations.append(output.detach().cpu())
-        activations = torch.cat(activations, dim=0)
-        return activations.numpy()
+                for img, label in zip(output.detach().cpu(), labels):
+                    label = label.item()
+                    if label not in activations_by_class:
+                        activations_by_class[label] = []
+                    activations_by_class[label].append(img.numpy())
+        for label in activations_by_class:
+            activations_by_class[label] = np.array(activations_by_class[label])
+        return activations_by_class
 
-    def _perform_activation_clustering(self, activations):
-        cluster_labels = self.clusterer.fit_predict(activations)
-        return cluster_labels
+    def _perform_activation_clustering(self, activations_by_class):
+        cluster_labels_by_class = {}
+        for label, activations in activations_by_class.items():
+            cluster_labels = self.clusterer.fit_predict(activations)
+            cluster_labels_by_class[label] = cluster_labels
+        return cluster_labels_by_class
 
-    def _identify_unlearning_targets(self, cluster_labels):
-        counts = np.bincount(cluster_labels)
-        target_cluster = np.argmin(counts)
-        return np.where(cluster_labels == target_cluster)[0]
+    def _identify_unlearning_targets(self, cluster_labels_by_class):
+        """
+        Identify the samples that should be unlearned based on cluster analysis for each class.
+        """
+        unlearning_targets = set()
+        for label, cluster_labels in cluster_labels_by_class.items():
+            counts = np.bincount(cluster_labels)
+            target_cluster = np.argmin(counts)
+            targets = np.where(cluster_labels == target_cluster)[0]
+            unlearning_targets.update(targets)
+        return list(unlearning_targets)
 
     def _filter_loader(self, loader, targets):
         # Assuming loader.dataset is a list or similar; adjust for actual data structure
@@ -525,45 +542,31 @@ class ActivationClustering(ApplyK):
         print("Starting unlearning process...")
 
         # Get activations from the model 
-        activations = self._get_activations(train_loader)
+        activations_by_class = self._get_activations(train_loader)
         
         # Perform activation clustering on these activations
-        cluster_labels = self._perform_activation_clustering(activations)
+        cluster_labels = self._perform_activation_clustering(activations_by_class)
         
         # Identify unlearning targets based on cluster analysis
         unlearning_targets = self._identify_unlearning_targets(cluster_labels)
+        detected_idx_path = '/data/jiawei_li/corrective-unlearning-bench/notebook/harmful_idx.txt'
+        with open(detected_idx_path, 'w') as file:
+            file.write(', '.join(map(str, sorted(unlearning_targets))))
 
         print("remove: ", len(unlearning_targets))
         
         # Filter out the unlearning targets from the train_loader
         new_train_loader = self._filter_loader(train_loader, unlearning_targets)
-        self.model = unlearn_func(self.model, 'EU')
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1)
-        self.scaler = torch.cuda.amp.GradScaler()
-
-        print(f"Retraining model without {len(unlearning_targets)} identified targets.")
-        
-        for epoch in range(self.opt.unlearn_iters):  
+        model = getattr(resnet, self.opt.model)(self.opt.num_classes)
+        super().__init__(self.opt, model, None)  
+        self.model = prepare_model(model=model, task=self.task)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.1)
+        # Re-train the model with the filtered training set using existing methods
+        while self.curr_step < self.opt.unlearn_iters:
             self.train_one_epoch(new_train_loader)
-        
-        self.eval(test_loader)
+            self.eval(test_loader)
         
         print("Unlearning process completed.")
-
-    def train_one_epoch(self, loader):
-        self.model.train()
-        running_loss = 0.0
-        for images, targets, _ in loader:
-            images, targets = images.to(self.opt.device), targets.to(self.opt.device)
-            self.optimizer.zero_grad()
-            with torch.set_grad_enabled(True):
-                outputs = self.model(images)
-                loss = self.criterion(outputs, targets)  # Assuming self.criterion is defined
-                loss.backward()
-                self.optimizer.step()
-            running_loss += loss.item() * images.size(0)
-        self.epoch_loss = running_loss / len(loader.dataset)
-        print(f'Training Loss: {self.epoch_loss:.6f}')
 
     def get_save_prefix(self):
         self.unlearn_file_prefix = self.opt.pretrain_file_prefix+'/'+str(self.opt.deletion_size)+'_'+self.opt.unlearn_method+'_'+self.opt.exp_name
@@ -798,14 +801,11 @@ class FlippingInfluence(Naive):
         harmful_indices.update(deletion_idx.tolist())
         # print(f"remove samples: ({len(harmful_indices)})")
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)
-        # retrain from scratch
+        # retrain from scratch 
         model = getattr(resnet, self.opt.model)(self.opt.num_classes)
         super().__init__(self.opt, model, None)  
-        self.model = model
-        # exact unlearn
-        #self.model = unlearn_func(self.model, 'EU')
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
-        self.scaler = GradScaler()
+        self.model = prepare_model(model=model, task=self.task)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.1)
         while self.curr_step < self.opt.unlearn_iters:
             self.train_one_epoch(new_train_loader)
             self.eval(test_loader)
@@ -894,14 +894,8 @@ class SwappingInfluence(Naive):
             # Step 3: Calculate delta scores
             new_scores = new_scores.mean(dim=0)
             old_scores = old_scores.mean(dim=0)
-            old_ranks = np.argsort(np.argsort(old_scores,  axis=0), axis=0)
-            print(old_ranks)
-            new_ranks = np.argsort(np.argsort(new_scores,  axis=0), axis=0)
-            print(new_ranks)
-            #delta_scores = new_scores - old_scores
-            #delta_scores_np = delta_scores.cpu().numpy()
-            delta_ranks = new_ranks - old_ranks
-            delta_ranks_np = delta_ranks.cpu().numpy()
+            delta_scores = new_scores - old_scores
+            delta_scores_np = delta_scores.cpu().numpy()
 
             # Step 4: Identify detected poisons
             #np.savez("delta_scores.npz", delta_scores=delta_scores)
@@ -909,7 +903,7 @@ class SwappingInfluence(Naive):
             #print("negative counts size:", negative_counts.size())
             #negative_counts_np = negative_counts.cpu().numpy()
             #detected_poison = [i for i, score in enumerate(delta_scores_np) if score > threshold]
-            sorted_indexes = np.argsort(delta_ranks_np)
+            sorted_indexes = np.argsort(delta_scores_np)
             detected_poison = sorted_indexes[:num_topk].tolist()
             detected_poisons.update(detected_poison)
 
@@ -928,10 +922,10 @@ class SwappingInfluence(Naive):
         # Filter out the harmful data points
         new_train_loader = self.filter_training_data(train_loader, harmful_indices)  
         
-        # Apply Exact Unlearning (EU) to the model
-        self.model = unlearn_func(self.model, 'EU')
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.opt.max_lr, momentum=0.9, weight_decay=self.opt.wd)
-        self.scaler = GradScaler()
+        model = getattr(resnet, self.opt.model)(self.opt.num_classes)
+        super().__init__(self.opt, model, None)  
+        self.model = prepare_model(model=model, task=self.task)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.1)
         
         # Retrain the model with the filtered training set
         while self.curr_step < self.opt.unlearn_iters:
