@@ -13,6 +13,7 @@ from sklearn.cluster import KMeans
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn as nn
+from sklearn.decomposition import PCA
 import sys
 sys.path.append('/data/jiawei_li/corrective-unlearning-bench/src')
 # import pytorch_influence_functions as ptif
@@ -492,6 +493,7 @@ class ActivationClustering(Naive):
         super().__init__(opt, model, prenet)
         self.task = ClassificationTask()
         self.model = prepare_model(model=model, task=self.task)
+        self.pca = PCA(n_components=3)
         self.nb_clusters = 2  
         self.clusterer = KMeans(n_clusters=self.nb_clusters, random_state=0)
 
@@ -517,6 +519,7 @@ class ActivationClustering(Naive):
     def _perform_activation_clustering(self, activations_by_class):
         cluster_labels_by_class = {}
         for label, activations in activations_by_class.items():
+            activations = self.pca.fit_transform(activations)
             cluster_labels = self.clusterer.fit_predict(activations)
             cluster_labels_by_class[label] = cluster_labels
         return cluster_labels_by_class
