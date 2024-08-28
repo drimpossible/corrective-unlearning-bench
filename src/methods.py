@@ -496,6 +496,16 @@ class ActivationClustering(Naive):
         self.pca = PCA(n_components=3)
         self.nb_clusters = 2  
         self.clusterer = KMeans(n_clusters=self.nb_clusters, random_state=0)
+        self.last_layer = self._get_last_layer()
+        self.intermediate_outputs = {}
+
+    def _get_last_layer(self):
+        return self.model.fc
+    
+    def _register_hooks(self):
+        def hook_fn(module, input, output):
+            self.intermediate_outputs['fc_layer'] = output
+        self.last_layer.register_forward_hook(hook_fn)
 
     def _get_activations(self, data_loader):
         """
@@ -503,15 +513,17 @@ class ActivationClustering(Naive):
         """
         activations_by_class = {}
         self.model.eval()
+        self._register_hooks()
         with torch.no_grad():
             for images, labels, _ in data_loader:
                 images = images.to(self.opt.device)
                 output = self.model(images)
-                for img, label in zip(output.detach().cpu(), labels):
+                activations = self.intermediate_outputs['fc_layer']
+                for act, label in zip(activations.detach().cpu(), labels):
                     label = label.item()
                     if label not in activations_by_class:
                         activations_by_class[label] = []
-                    activations_by_class[label].append(img.numpy())
+                    activations_by_class[label].append(act)
         for label in activations_by_class:
             activations_by_class[label] = np.array(activations_by_class[label])
         return activations_by_class
