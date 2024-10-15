@@ -7,7 +7,7 @@ This repository contains simplified code for the paper:
 
 \* = Equal Contribution
 
-[[PDF](https://arxiv.org/pdf/2402.14015.pdf)] [[Slides]()] [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
+[[PDF](https://openreview.net/pdf?id=v8enu4jP9B)] [[Slides]()] [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
 
 <p align="center">
 <a href="url"><img src="https://github.com/drimpossible/corrective-unlearning-bench/blob/main/corrective-diff.png" height="300" width="381" ></a>
@@ -58,12 +58,11 @@ Additional details and default hyperparameters can be found in `src/opts.py`
 We hope you are excited by the potential for corrective unlearning! To cite our work:
 
 ```
-@misc{goel2024corrective,
+@article{goel2024corrective,
       title={Corrective Machine Unlearning}, 
       author={Shashwat Goel and Ameya Prabhu and Philip Torr and Ponnurangam Kumaraguru and Amartya Sanyal},
+      journal={Transactions on Machine Learning Research},
       year={2024},
-      eprint={2402.14015},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG}
+      url={https://openreview.net/forum?id=v8enu4jP9B}
 }
 ```
