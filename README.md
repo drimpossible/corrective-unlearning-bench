@@ -7,7 +7,7 @@ This repository contains simplified code for the paper:
 
 \* = Equal Contribution
 
-[[PDF](https://openreview.net/pdf?id=v8enu4jP9B)] [[Slides]()] [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
+[[PDF](https://openreview.net/pdf?id=v8enu4jP9B)] [[Slides](https://docs.google.com/presentation/d/1WzLnsdjy45Ror-BXDbrlG0ayLVvu6z39YU2gB0gt89M/edit#slide=id.g2dc8ccd0772_0_0)] [[Bibtex](https://github.com/drimpossible/corrective-unlearning-bench/#citation)]
 
 <p align="center">
 <a href="url"><img src="https://github.com/drimpossible/corrective-unlearning-bench/blob/main/corrective-diff.png" height="300" width="381" ></a>
